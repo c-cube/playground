@@ -9,6 +9,10 @@ all: f_500M build
 f_500M:
 	dd if=/dev/zero of=$@ bs=1M count=500 status=progress
 
+clean:
+	dune clean
+	rm f_500M
+
 build:
 	@dune build io.exe --profile=release
 	@ln -sf _build/default/io.exe run
