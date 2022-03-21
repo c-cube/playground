@@ -1,0 +1,4 @@
+
+(executables
+  (names server client)
+  (libraries zmq mtime mtime.clock.os))
