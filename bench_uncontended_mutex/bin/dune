@@ -1,0 +1,4 @@
+(executable
+ (public_name foo2)
+ (name main)
+ (libraries foo2 threads))
