@@ -1,0 +1,2 @@
+N=100000000
+100000000 iterations in 1.179s (84850904.203/s; 12ns / iteration)
