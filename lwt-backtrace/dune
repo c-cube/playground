@@ -1,0 +1,5 @@
+(executable
+ (libraries lwt lwt.unix)
+ (name run))
+
+(env (_ (flags :standard -warn-error -a+8)))

@@ -1,0 +1,10 @@
+(lang dune 2.0)
+
+(name lwtb)
+
+(generate_opam_files true)
+
+(package
+ (name lwtb)
+ (synopsis "experiment with lwt+ backtrace")
+ (depends ocaml dune))
