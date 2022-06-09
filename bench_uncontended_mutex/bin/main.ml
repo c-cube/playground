@@ -3,6 +3,7 @@ let () =
   let lock = Mutex.create() in
   for _i=1 to n do
     Mutex.lock lock;
+    Sys.opaque_identity ();
     Mutex.unlock lock;
   done;
 

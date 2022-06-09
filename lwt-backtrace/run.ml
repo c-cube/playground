@@ -8,7 +8,7 @@ let ( let* ) x f = Lwt.backtrace_bind Reraise.reraise x f
 *)
 
 let rec my_fib n =
-  if n = 30 then failwith "oh no"
+  if n = 22 then Lwt.fail (Failure "oh no")
   else if n <= 1 then Lwt.return 1
   else (
     let* n1 = my_fib (n-1)
@@ -52,7 +52,7 @@ let main () =
   Sync.run 50;
   Printf.printf "ASYNC\n%!";
   let*() = run 20 in
-  let*() = run 50 in
+  let*() = run 30 in
   Lwt_io.printl "all done"
 
 let () =
