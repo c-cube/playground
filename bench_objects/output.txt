@@ -1,3 +1,5 @@
 N=1000000000
-OBJ: 1000000000 iterations in 8.575s (116617758.833/s; 9ns / iteration)
-REC: 1000000000 iterations in 4.776s (209386907.707/s; 4.8ns / iteration)
+OBJ: 1000000000 iterations in 8.482s (117899538.897/s; 8.5ns / iteration)
+MOD: 1000000000 iterations in 4.863s (205624205.084/s; 4.9ns / iteration)
+REC: 1000000000 iterations in 4.713s (212170159.481/s; 4.7ns / iteration)
+DIRECT: 1000000000 iterations in 2.654s (376808425.644/s; 2.7ns / iteration)

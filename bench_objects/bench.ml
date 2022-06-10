@@ -70,6 +70,18 @@ let () =
   let n = try Sys.getenv "N" |> int_of_string with _ -> 1_000_000_000 in
   Printf.printf "N=%d\n%!" n;
 
+  (* warmup *)
+  begin
+    let open O in
+    Sys.opaque_identity (
+      let r = mk_reader() in
+      for i=1 to 100_000 do
+        let _x = foo r in
+        ignore @@ Sys.opaque_identity _x
+      done;
+    );
+  end;
+
   begin
     let open O in
     let t_start = now_s() in
@@ -139,7 +151,7 @@ let () =
       done;
     );
     let elapsed_s = now_s () -. t_start in
-    Printf.printf "INLINE CODE: %d iterations in %.3fs (%.3f/s; %.1fns / iteration)\n%!"
+    Printf.printf "DIRECT: %d iterations in %.3fs (%.3f/s; %.1fns / iteration)\n%!"
       n elapsed_s
       (float n /. elapsed_s) (elapsed_s *. 1e9 /. float n);
   end;
