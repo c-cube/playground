@@ -44,6 +44,11 @@ impl TermStore {
         Default::default()
     }
 
+    /// Number of composite terms (application, lambda…)
+    pub fn n_composite_terms(&self) -> usize {
+        self.hcons.len()
+    }
+
     fn hcons_var_(&mut self, v: &str) -> Var {
         match self.hcons_var.get(v) {
             Some(v) => *v,
@@ -198,6 +203,7 @@ pub fn main() -> Result<()> {
     };
 
     dbg!(tst.print(big_term));
+    dbg!(tst.n_composite_terms());
 
     let store = {
         let mut buf: Vec<u8> = Vec::new();
