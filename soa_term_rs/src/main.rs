@@ -185,6 +185,7 @@ pub fn main() -> Result<()> {
     let a = tst.var("a");
     let v = tst.app(f, a);
     dbg!(tst.print(v));
+    dbg!(std::mem::size_of::<Term>());
 
     let big_term = {
         let db0 = tst.db_var(0);
