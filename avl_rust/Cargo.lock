@@ -3,5 +3,5 @@
 version = 3
 
 [[package]]
-name = "avl2"
+name = "avl_test"
 version = "0.1.0"
