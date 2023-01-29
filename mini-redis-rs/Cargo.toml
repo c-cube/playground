@@ -1,0 +1,19 @@
+[package]
+name = "mini-redis-rs"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+anyhow = "1.0.68"
+async-recursion = "1.0.2"
+bumpalo = "3.12.0"
+dashmap = "5.4.0"
+env_logger = { version = "0.10.0", default-features = false, features = ["color", "humantime"] }
+log = "0.4.17"
+tokio = { version = "1.24.2", features = ["full"] }
+
+[profile.dev]
+opt-level=1
+debug=1
