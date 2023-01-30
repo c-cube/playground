@@ -1,11 +1,11 @@
 //! Wire protocol
 
-use std::net::SocketAddr;
+use std::{io::Write, net::SocketAddr};
 
 use anyhow::{Context, Result};
 use async_recursion::async_recursion;
 use tokio::{
-    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, BufWriter},
     net::{
         tcp::{ReadHalf, WriteHalf},
         TcpStream,
@@ -17,7 +17,7 @@ pub struct Conn<'a> {
     addr: SocketAddr,
     buf: Vec<u8>,
     read: BufReader<ReadHalf<'a>>,
-    write: WriteHalf<'a>,
+    write: BufWriter<WriteHalf<'a>>,
 }
 
 /// Redis message.
@@ -37,8 +37,8 @@ impl<'a> Conn<'a> {
         Self {
             addr,
             read: BufReader::new(read),
+            write: BufWriter::new(write),
             buf: vec![0; 16 * 1024],
-            write,
         }
     }
 
@@ -144,20 +144,21 @@ pub async fn read_frame<'arena>(
 
 #[async_recursion(?Send)]
 async fn write_frame_rec(conn: &mut Conn, frame: &Frame) -> Result<()> {
+    conn.buf.clear();
     match frame {
         Frame::String(s) => {
-            let frame = format!("${}\r\n", s.as_bytes().len());
-            conn.write.write_all(frame.as_bytes()).await?;
+            write!(&mut conn.buf, "${}\r\n", s.as_bytes().len()).unwrap();
+            conn.write.write_all(&conn.buf[..]).await?;
             conn.write.write_all(s.as_bytes()).await?;
             conn.write.write_all(b"\r\n").await?;
         }
         Frame::Int(i) => {
-            let frame = format!(":{}", i);
-            conn.write.write_all(frame.as_bytes()).await?
+            write!(&mut conn.buf, ":{}\r\n", i).unwrap();
+            conn.write.write_all(&conn.buf).await?
         }
         Frame::Bulk(a) => {
-            let frame = format!("*{}\r\n", a.len());
-            conn.write.write_all(frame.as_bytes()).await?;
+            write!(&mut conn.buf, "*{}\r\n", a.len()).unwrap();
+            conn.write.write_all(&conn.buf).await?;
             for x in &a[..] {
                 write_frame_rec(conn, x).await?;
             }

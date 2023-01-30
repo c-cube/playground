@@ -7,7 +7,7 @@ use mini_redis_rs::Client;
 use tokio::{net::TcpStream, task::LocalSet};
 
 const N_CONN: usize = 1_024;
-const N_ITER: usize = 100;
+const N_ITER: usize = 1_000;
 const KEYS: &[&str] = &["a", "b", "c", "d", "e"];
 
 #[tokio::main(flavor="current_thread")]
