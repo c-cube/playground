@@ -6,10 +6,11 @@ use anyhow::{Context, Result};
 use mini_redis_rs::Client;
 use tokio::{net::TcpStream, task::LocalSet};
 
-const N_CONN: usize = 8;
+const N_CONN: usize = 1_024;
 const N_ITER: usize = 100;
+const KEYS: &[&str] = &["a", "b", "c", "d", "e"];
 
-#[tokio::main]
+#[tokio::main(flavor="current_thread")]
 pub async fn main() -> Result<()> {
     env_logger::init();
     let addr: SocketAddr =
@@ -17,8 +18,6 @@ pub async fn main() -> Result<()> {
     log::info!(
         "testing {addr:?} with {N_CONN} connections, {N_ITER} iterations"
     );
-
-    let keys = ["a", "b", "c", "d", "e"];
 
     let local_set = LocalSet::new();
 
@@ -35,16 +34,15 @@ pub async fn main() -> Result<()> {
             for _i in 0..N_ITER {
                 //log::debug!("start iteration {_i} for task {_task}");
                 arena.reset();
-                let key = keys[_i % keys.len()];
+                let key = KEYS[_i % KEYS.len()];
                 let n: usize = match client.q_get(key, &arena).await {
-                    Ok(str) => {
-                        str.parse::<usize>().with_context(|| {
-                            "parsing integer obtained from get"
-                        }).unwrap_or(0)
-                    }
+                    Ok(str) => str
+                        .parse::<usize>()
+                        .with_context(|| "parsing integer obtained from get")
+                        .unwrap_or(0),
                     Err(e) => {
                         log::error!("error in get: {e:?}");
-                        continue;
+                        0
                     }
                 };
 
@@ -64,10 +62,11 @@ pub async fn main() -> Result<()> {
     local_set.await;
 
     let elapsed = start.elapsed();
+    let n = N_CONN * N_ITER * KEYS.len();
     println!(
-        "done {n} get+set in {t}s",
-        n = N_CONN * N_ITER,
-        t = (elapsed.as_millis() as f64) / 1000.
+        "done {n} get+set in {t}s ({rate:.2}/s)",
+        t = (elapsed.as_millis() as f64) / 1000.,
+        rate = (n as f64) / (elapsed.as_secs_f64())
     );
 
     Ok(())

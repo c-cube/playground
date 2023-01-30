@@ -73,7 +73,7 @@ impl<'a> ClientHandler<'a> {
                 ) => {
                     log::debug!("insert {k:?} => {v:?}");
                     st.kv.insert(k.to_string(), v.to_string());
-                    wire::write_frame(&mut self.conn, &Frame::String("ok"))
+                    wire::write_frame(&mut self.conn, &Frame::String("OK"))
                         .await?;
                 }
 

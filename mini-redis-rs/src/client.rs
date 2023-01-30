@@ -58,7 +58,7 @@ impl<'a> Client<'a> {
 
         let res = wire::read_frame(&mut self.conn, arena).await?;
         match res {
-            Some(Frame::String("ok")) => Ok(true),
+            Some(Frame::String("OK")) => Ok(true),
             Some(Frame::Error(e)) => {
                 anyhow::bail!("server replied with error {e}")
             }
