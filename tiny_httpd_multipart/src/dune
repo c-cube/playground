@@ -1,0 +1,4 @@
+(executable
+ (public_name tiny_httpd_multipart)
+ (name main)
+ (libraries tiny_httpd multipart_form))

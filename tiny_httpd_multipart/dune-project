@@ -1,0 +1,9 @@
+(lang dune 3.6)
+
+(name tiny_httpd_multipart)
+(generate_opam_files true)
+(package
+ (name tiny_httpd_multipart)
+ (synopsis "A short synopsis")
+ (description "A longer description")
+ (depends ocaml dune tiny_httpd multipart_form))
