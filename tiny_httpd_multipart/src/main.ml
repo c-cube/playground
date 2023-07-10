@@ -55,8 +55,7 @@ let setup_upload_endpoint server : unit =
   let n_bytes_body = ref 0 in
   let rec consume_body () =
     req.body.fill_buf ();
-    (* use small size to exercize streaming *)
-    let n = min 16 req.body.len in
+    let n = req.body.len in
     let next_chunk =
       if n = 0 then
         `Eof
@@ -64,7 +63,7 @@ let setup_upload_endpoint server : unit =
         let str = Bytes.sub_string req.body.bs req.body.off n in
         req.body.consume n;
         n_bytes_body := !n_bytes_body + n;
-        epf "read %S\n%!" str;
+        (* epf "read %S\n%!" str; *)
         `String str
       )
     in
