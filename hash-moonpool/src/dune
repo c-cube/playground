@@ -1,2 +1,3 @@
 
-(executable(name test) (libraries containers moonpool digestif))
+(executable(name test) (libraries containers moonpool digestif trace ; tracy-client.trace
+                                  ))

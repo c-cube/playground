@@ -4,8 +4,13 @@ module Hash = Digestif.SHA1
 let ( let@ ) = ( @@ )
 let spf = Printf.sprintf
 let ( / ) = Filename.concat
+let use_mmap = ref false
 
-let hash_of_blob filename : Hash.t =
+let hash_of_blob_read filename : Hash.t =
+  let@ _sp =
+    Trace.with_span ~__FILE__ ~__LINE__ "hash-blob" ~data:(fun () ->
+        [ "f", `String filename ])
+  in
   let ic = open_in filename in
   let ln = in_channel_length ic in
   let rec go buf ctx =
@@ -18,9 +23,38 @@ let hash_of_blob filename : Hash.t =
   let ctx = Hash.empty in
   let str = spf "blob %d\000" ln in
   let ctx = Hash.feed_string ctx str in
-  let res = go (Bytes.create 0x1000) ctx in
+  let res = go (Bytes.create 0x10_000) ctx in
   close_in ic;
   res
+
+let hash_of_blob_mmap filename : Hash.t =
+  let@ _sp =
+    Trace.with_span ~__FILE__ ~__LINE__ "hash-blob" ~data:(fun () ->
+        [ "f", `String filename ])
+  in
+
+  let ic = open_in filename in
+  let ln = in_channel_length ic in
+
+  let fd = Unix.descr_of_in_channel ic in
+  let map : Digestif.bigstring =
+    Unix.map_file fd Bigarray.Char Bigarray.C_layout false [| ln |]
+    |> Bigarray.array1_of_genarray
+  in
+
+  let ctx = Hash.empty in
+  let str = spf "blob %d\000" ln in
+  let ctx = Hash.feed_string ctx str in
+  let ctx = Hash.feed_bigstring ctx map in
+
+  close_in ic;
+  Hash.get ctx
+
+let hash_of_blob file =
+  if !use_mmap then
+    hash_of_blob_mmap file
+  else
+    hash_of_blob_read file
 
 module Seq = struct
   let rec hash_of_tree filename : Hash.t =
@@ -97,6 +131,7 @@ module Par = struct
     hash_of_entries entries
 
   and hash_of_entries entries : Hash.t =
+    (* let@ _sp = Trace.with_span ~__FILE__ ~__LINE__ "hash-entries" in *)
     let entries =
       Fork_join.map_list
         (function
@@ -122,6 +157,7 @@ module Par = struct
     Hash.get ctx
 
   let hash_files ~j (l : string list) : Hash.t =
+    (* let@ _sp = Trace.with_span ~__FILE__ ~__LINE__ "hash-files" in *)
     let per_domain, min =
       if j = 0 then
         Some 1, None
@@ -146,10 +182,15 @@ module Par = struct
 end
 
 let () =
+  (* Tracy_client_trace.setup (); *)
   let seq = ref false in
   let j = ref 0 in
   let opts =
-    [ "-seq", Arg.Set seq, " sequential"; "-j", Arg.Set_int j, " parallelism" ]
+    [
+      "-seq", Arg.Set seq, " sequential";
+      "-j", Arg.Set_int j, " parallelism";
+      "-mmap", Arg.Set use_mmap, " use mmap";
+    ]
     |> Arg.align
   in
   let files = ref [] in
