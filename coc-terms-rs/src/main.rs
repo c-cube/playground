@@ -3,6 +3,9 @@ use std::collections::{hash_map::Entry, HashMap};
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub struct Term(u32);
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
+pub struct Level(u8);
+
 pub const DUMMY_TERM: Term = Term(u32::MAX);
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
