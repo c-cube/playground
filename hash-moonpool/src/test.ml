@@ -156,15 +156,9 @@ module Par = struct
     in
     Hash.get ctx
 
-  let hash_files ~j (l : string list) : Hash.t =
+  let hash_files ?j (l : string list) : Hash.t =
     (* let@ _sp = Trace.with_span ~__FILE__ ~__LINE__ "hash-files" in *)
-    let per_domain, min =
-      if j = 0 then
-        Some 1, None
-      else
-        None, Some j
-    in
-    let@ pool = Pool.with_ ?min ?per_domain () in
+    let@ pool = Ws_pool.with_ ?num_threads:j () in
 
     let entries =
       List.map
@@ -178,7 +172,7 @@ module Par = struct
           kind, s)
         l
     in
-    Pool.run_wait_block pool (fun () -> hash_of_entries entries)
+    Runner.run_wait_block pool (fun () -> hash_of_entries entries)
 end
 
 let () =
@@ -203,6 +197,12 @@ let () =
       if !seq then
         Seq.hash_files files
       else
-        Par.hash_files ~j:!j files
+        Par.hash_files
+          ?j:
+            (if !j = 0 then
+              None
+            else
+              Some !j)
+          files
     in
     Format.printf "%a@." Hash.pp h

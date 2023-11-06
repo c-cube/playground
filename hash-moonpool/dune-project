@@ -1,3 +1,4 @@
 (lang dune 3.3)
-
-(package (name test) (depends containers moonpool trace digestif) (depopts tracy-client))
+(package (name test)
+(allow_empty)
+         (depends containers moonpool trace digestif) (depopts tracy-client))
