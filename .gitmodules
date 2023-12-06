@@ -1,0 +1,3 @@
+[submodule "hash-moonpool/vendor/moonpool"]
+	path = hash-moonpool/vendor/moonpool
+	url = https://github.com/c-cube/moonpool
