@@ -1,6 +1,9 @@
 let n = 100_000_000
 
 let timeit f out =
+  (* warmup *)
+  ignore (Sys.opaque_identity (f @@ (n / 10)) : unit);
+
   let t_start = Mtime_clock.now_ns () in
 
   ignore (Sys.opaque_identity (f n) : unit);
