@@ -1,0 +1,9 @@
+(lang dune 2.9)
+(generate_opam_files)
+
+(package
+  (name main)
+  (depends
+    ocaml_intrinsics
+    mtime))
+

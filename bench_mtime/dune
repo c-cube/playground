@@ -1,0 +1,3 @@
+(executable
+ (libraries mtime mtime.clock.os ocaml_intrinsics)
+ (name main))
