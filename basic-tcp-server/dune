@@ -1,0 +1,3 @@
+(executable
+ (name basic_tcp_server)
+ (libraries unix threads))
