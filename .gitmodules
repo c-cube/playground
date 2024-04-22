@@ -1,3 +1,6 @@
 [submodule "hash-moonpool/vendor/moonpool"]
 	path = hash-moonpool/vendor/moonpool
 	url = https://github.com/c-cube/moonpool
+[submodule "lmdb-ocaml-2024-04-22/vendor/lmdb"]
+	path = lmdb-ocaml-2024-04-22/vendor/lmdb
+	url = https://github.com/drup/ocaml-lmdb
