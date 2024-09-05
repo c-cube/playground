@@ -12,37 +12,35 @@ IntRef :: struct {
 	using procs: ^Procs,
 }
 
-ActualIntRef :: struct {
-	using ref: IntRef,
-	r:         i64,
-}
-
-@(private)
-incr_int_ref :: proc(r: rawptr) {
-	x := (^ActualIntRef)(r)
-	x.r += 1
-}
-
-@(private)
-decr_int_ref :: proc(r: rawptr) {
-	x := (^ActualIntRef)(r)
-	x.r -= 1
-}
-
-@(private)
-get_int_ref :: proc(r: rawptr) -> i64 {
-	x := (^ActualIntRef)(r)
-	return x.r
-}
-
-int_ref_procs: Procs = {
-	incr = incr_int_ref,
-	decr = decr_int_ref,
-	get  = get_int_ref,
-}
-
-
 mk_int_ref :: proc() -> ^IntRef {
+
+	ActualIntRef :: struct {
+		using ref: IntRef,
+		r:         i64,
+	}
+
+	incr_int_ref :: proc(r: rawptr) {
+		x := (^ActualIntRef)(r)
+		x.r += 1
+	}
+
+	decr_int_ref :: proc(r: rawptr) {
+		x := (^ActualIntRef)(r)
+		x.r -= 1
+	}
+
+	get_int_ref :: proc(r: rawptr) -> i64 {
+		x := (^ActualIntRef)(r)
+		return x.r
+	}
+
+	@(static)
+	int_ref_procs: Procs = {
+		incr = incr_int_ref,
+		decr = decr_int_ref,
+		get  = get_int_ref,
+	}
+
 	r := new(ActualIntRef)
 	r^ = {
 		r = 0,
