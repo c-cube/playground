@@ -21,19 +21,19 @@ main :: proc() {
 
 	file := os.open(FILE, 'r') or_else panic("cannot open file")
 	defer os.close(file)
-  fd := transmute(linux.Fd)file
+	fd := transmute(linux.Fd)file
 
 	file_len: uint
 	{
-        stats : linux.Stat
-		if errno := linux.fstat(fd, &stats ); errno != .NONE { panic("cannot stat file") }
+		stats: linux.Stat
+		if errno := linux.fstat(fd, &stats); errno != .NONE {panic("cannot stat file")}
 		file_len = stats.size
 	}
 
-  // mmap the file
+	// mmap the file
 	bytes_ptr, err_mmap := linux.mmap(0, file_len, {.READ}, {.SHARED}, fd)
-    if err_mmap != .NONE { panic("cannot mmap") }
-  bytes := slice.bytes_from_ptr(bytes_ptr, int(file_len))
+	if err_mmap != .NONE {panic("cannot mmap")}
+	bytes := slice.bytes_from_ptr(bytes_ptr, int(file_len))
 
 	Data :: struct {
 		n_samples: u64,
@@ -55,18 +55,23 @@ main :: proc() {
 
 	n_entries := 0
 
-    str_iterator := string(bytes)
+	str_iterator := string(bytes)
 	for line in strings.split_lines_after_iterator(&str_iterator) {
 		defer free_all(context.temp_allocator)
 
-        line := line[:len(line)-1] // remove trailing '\n'
-		toks := strings.split_n(line, ";", 2, allocator = context.temp_allocator)
+		line := line[:len(line) - 1]
 
-		if len(toks) < 2 {continue} 	// invalid line
+		split := 0
+		for split < len(line) {
+			if line[split] == ';' {break}
+			split += 1
+		}
+		if split == len(line) {continue} 	// invalid line
 
 		n_entries += 1
-		city := toks[0]
-		num := strconv.parse_f64(toks[1]) or_else panic("cannot parse num")
+		city := line[:split]
+		// fmt.printfln("line=%w, split=%d", line, split)
+		num := strconv.parse_f64(line[split + 1:]) or_else panic("cannot parse num")
 
 		data, found := &per_city[city]
 		if found {
