@@ -5,14 +5,19 @@ import "core:bufio"
 import "core:encoding/csv"
 import "core:fmt"
 import "core:io"
+import "core:mem"
 import "core:os"
 import "core:slice"
 import "core:strconv"
 import "core:strings"
+import "core:time"
 
-FILE :: #config(FILE, "weather_stations.csv")
+FILE :: #config(FILE, "data.csv")
 
 main :: proc() {
+	t1 := time.now()
+
+
 	file := os.open(FILE, 'r') or_else panic("cannot open file")
 	reader := os.stream_from_handle(file)
 	defer os.close(file)
@@ -44,6 +49,11 @@ main :: proc() {
 	defer delete(per_city)
 	defer for city in per_city {delete(city)}
 
+	// use an arena as a temporary allocator
+	arena_buffer := make([]byte, 64 * 1024) or_else panic("cannot allocate buffer")
+	arena: mem.Arena
+	mem.arena_init(&arena, arena_buffer)
+	context.temp_allocator = mem.arena_allocator(&arena)
 
 	n_entries := 0
 	for bufio.scanner_scan(&scanner) {
@@ -65,8 +75,8 @@ main :: proc() {
 			data.max = max(data.max, num)
 			data.sum += num
 		} else {
-      city_slice := make([]u8, len(city))
-      copy(city_slice, city)
+			city_slice := make([]u8, len(city))
+			copy(city_slice, city)
 			per_city[string(city_slice)] = Data {
 				n_samples = 1,
 				min       = num,
@@ -74,9 +84,9 @@ main :: proc() {
 				sum       = num,
 			}
 		}
-	}
 
-	fmt.printfln("read %d entries", n_entries)
+		if n_entries % 100_000 == 0 {fmt.printf("\rread %d entries", n_entries)}
+	}
 
 	Entry :: struct {
 		name:       string,
@@ -96,4 +106,14 @@ main :: proc() {
 		fmt.printf("%s: %f/%f/%f,", e.name, e.min, e.sum / f64(e.n_samples), e.max)
 	}
 	fmt.println("}")
+
+	t2 := time.now()
+	dur_secs := time.duration_seconds(time.diff(t1, t2))
+
+	fmt.printfln(
+		"read %d entries in %fs (%f entries/s)",
+		n_entries,
+		dur_secs,
+		f64(n_entries) / dur_secs,
+	)
 }
