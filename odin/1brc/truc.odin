@@ -5,7 +5,6 @@ import "core:bufio"
 import "core:encoding/csv"
 import "core:fmt"
 import "core:io"
-import "core:mem"
 import "core:os"
 import "core:slice"
 import "core:strconv"
@@ -31,7 +30,7 @@ main :: proc() {
 	}
 
 	// mmap the file
-	bytes_ptr, err_mmap := linux.mmap(0, file_len, {.READ}, {.SHARED}, fd)
+	bytes_ptr, err_mmap := linux.mmap(0, file_len, {.READ}, {.SHARED, .DENYWRITE, .NORESERVE}, fd)
 	if err_mmap != .NONE {panic("cannot mmap")}
 	bytes := slice.bytes_from_ptr(bytes_ptr, int(file_len))
 
@@ -48,16 +47,16 @@ main :: proc() {
 	defer for city in per_city {delete(city)}
 
 	// use an arena as a temporary allocator
-	arena_buffer := make([]byte, 64 * 1024) or_else panic("cannot allocate buffer")
-	arena: mem.Arena
-	mem.arena_init(&arena, arena_buffer)
-	context.temp_allocator = mem.arena_allocator(&arena)
+	//arena_buffer := make([]byte, 64 * 1024) or_else panic("cannot allocate buffer")
+	//arena: mem.Arena
+	//mem.arena_init(&arena, arena_buffer)
+	//context.temp_allocator = mem.arena_allocator(&arena)
 
 	n_entries := 0
 
 	str_iterator := string(bytes)
 	for line in strings.split_lines_after_iterator(&str_iterator) {
-		defer free_all(context.temp_allocator)
+		// defer free_all(context.temp_allocator)
 
 		line := line[:len(line) - 1]
 
