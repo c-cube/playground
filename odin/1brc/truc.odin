@@ -12,6 +12,7 @@ import "core:strconv"
 import "core:strings"
 import "core:time"
 
+import "core:sys/linux"
 FILE :: #config(FILE, "data.csv")
 
 main :: proc() {
@@ -19,23 +20,20 @@ main :: proc() {
 
 
 	file := os.open(FILE, 'r') or_else panic("cannot open file")
-	reader := os.stream_from_handle(file)
 	defer os.close(file)
+  fd := transmute(linux.Fd)file
 
-	raw_reader := os.stream_from_handle(file)
-
-	//reader : bufio.Reader
-	//bufio.reader_init(&reader, raw_reader)
-	//defer bufio.reader_destroy(&reader)
-
-	scan_buf := make([]u8, 4 * 1024 * 1024) or_else panic("cannot allocate buffer")
-	defer delete(scan_buf)
-
-	scanner: bufio.Scanner = {
-		split = bufio.scan_lines,
+	file_len: uint
+	{
+        stats : linux.Stat
+		if errno := linux.fstat(fd, &stats ); errno != .NONE { panic("cannot stat file") }
+		file_len = stats.size
 	}
-	bufio.scanner_init_with_buffer(&scanner, raw_reader, scan_buf)
-	defer bufio.scanner_destroy(&scanner)
+
+  // mmap the file
+	bytes_ptr, err_mmap := linux.mmap(0, file_len, {.READ}, {.SHARED}, fd)
+    if err_mmap != .NONE { panic("cannot mmap") }
+  bytes := slice.bytes_from_ptr(bytes_ptr, int(file_len))
 
 	Data :: struct {
 		n_samples: u64,
@@ -56,10 +54,12 @@ main :: proc() {
 	context.temp_allocator = mem.arena_allocator(&arena)
 
 	n_entries := 0
-	for bufio.scanner_scan(&scanner) {
-		defer free_all(context.temp_allocator)
-		line := bufio.scanner_text(&scanner)
 
+    str_iterator := string(bytes)
+	for line in strings.split_lines_after_iterator(&str_iterator) {
+		defer free_all(context.temp_allocator)
+
+        line := line[:len(line)-1] // remove trailing '\n'
 		toks := strings.split_n(line, ";", 2, allocator = context.temp_allocator)
 
 		if len(toks) < 2 {continue} 	// invalid line
