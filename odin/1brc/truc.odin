@@ -19,20 +19,23 @@ main :: proc() {
 
 
 	file := os.open(FILE, 'r') or_else panic("cannot open file")
+	reader := os.stream_from_handle(file)
 	defer os.close(file)
-	fd := transmute(linux.Fd)file
 
-	file_len: uint
-	{
-		stats: linux.Stat
-		if errno := linux.fstat(fd, &stats); errno != .NONE {panic("cannot stat file")}
-		file_len = stats.size
+	raw_reader := os.stream_from_handle(file)
+
+	//reader : bufio.Reader
+	//bufio.reader_init(&reader, raw_reader)
+	//defer bufio.reader_destroy(&reader)
+
+	scan_buf := make([]u8, 4 * 1024 * 1024) or_else panic("cannot allocate buffer")
+	defer delete(scan_buf)
+
+	scanner: bufio.Scanner = {
+		split = bufio.scan_lines,
 	}
-
-	// mmap the file
-	bytes_ptr, err_mmap := linux.mmap(0, file_len, {.READ}, {.SHARED, .DENYWRITE, .NORESERVE}, fd)
-	if err_mmap != .NONE {panic("cannot mmap")}
-	bytes := slice.bytes_from_ptr(bytes_ptr, int(file_len))
+	bufio.scanner_init_with_buffer(&scanner, raw_reader, scan_buf)
+	defer bufio.scanner_destroy(&scanner)
 
 	Data :: struct {
 		n_samples: u64,
@@ -53,12 +56,9 @@ main :: proc() {
 	//context.temp_allocator = mem.arena_allocator(&arena)
 
 	n_entries := 0
-
-	str_iterator := string(bytes)
-	for line in strings.split_lines_after_iterator(&str_iterator) {
+	for bufio.scanner_scan(&scanner) {
 		// defer free_all(context.temp_allocator)
-
-		line := line[:len(line) - 1]
+		line := bufio.scanner_text(&scanner)
 
 		split := 0
 		for split < len(line) {
@@ -70,7 +70,11 @@ main :: proc() {
 		n_entries += 1
 		city := line[:split]
 		// fmt.printfln("line=%w, split=%d", line, split)
-		num := strconv.parse_f64(line[split + 1:]) or_else panic("cannot parse num")
+		num, num_ok := strconv.parse_f64(line[split + 1:])
+		if !num_ok {
+			fmt.printfln("failed to read line %w (num=%w)", line, line[split + 1:])
+			panic("cannot parse num")
+		}
 
 		data, found := &per_city[city]
 		if found {
@@ -79,9 +83,8 @@ main :: proc() {
 			data.max = max(data.max, num)
 			data.sum += num
 		} else {
-			city_slice := make([]u8, len(city))
-			copy(city_slice, city)
-			per_city[string(city_slice)] = Data {
+			city2 := strings.clone(city)
+			per_city[city2] = Data {
 				n_samples = 1,
 				min       = num,
 				max       = num,
@@ -106,8 +109,9 @@ main :: proc() {
 	slice.sort_by(entries[:], proc(i, j: Entry) -> bool {return i.name < j.name})
 
 	fmt.print("{")
-	for e in entries {
-		fmt.printf("%s: %f/%f/%f,", e.name, e.min, e.sum / f64(e.n_samples), e.max)
+	for e, _idx in entries {
+		if _idx > 0 {fmt.print(",")}
+		fmt.printf("%s:%f/%f/%f", e.name, e.min, e.sum / f64(e.n_samples), e.max)
 	}
 	fmt.println("}")
 
