@@ -110,8 +110,9 @@ main :: proc() {
 	dur_secs := time.duration_seconds(time.diff(t1, t2))
 
 	fmt.printfln(
-		"read %d entries in %fs (%f entries/s)",
+		"read %d entries (for %d cities) in %fs (%f entries/s)",
 		n_entries,
+		len(entries),
 		dur_secs,
 		f64(n_entries) / dur_secs,
 	)
