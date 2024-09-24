@@ -2,31 +2,22 @@
 package main
 
 import "core:bufio"
-import "core:encoding/csv"
 import "core:fmt"
-import "core:io"
 import "core:os"
 import "core:slice"
 import "core:strconv"
 import "core:strings"
 import "core:time"
 
-import "core:sys/linux"
 FILE :: #config(FILE, "data.csv")
 
 main :: proc() {
 	t1 := time.now()
 
-
 	file := os.open(FILE, 'r') or_else panic("cannot open file")
-	reader := os.stream_from_handle(file)
 	defer os.close(file)
 
 	raw_reader := os.stream_from_handle(file)
-
-	//reader : bufio.Reader
-	//bufio.reader_init(&reader, raw_reader)
-	//defer bufio.reader_destroy(&reader)
 
 	scan_buf := make([]u8, 4 * 1024 * 1024) or_else panic("cannot allocate buffer")
 	defer delete(scan_buf)
