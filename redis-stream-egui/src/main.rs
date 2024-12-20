@@ -75,13 +75,13 @@ impl TaskApp {
                                         let value =
                                             String::from_utf8_lossy(value_bytes).to_string();
                                         item_fields.insert(key, value);
-                                        new_tasks_added = true;
                                     }
                                 }
                             }
 
                             if !item_fields.is_empty() {
                                 self.items.push((item_id, item_fields));
+                                new_tasks_added = true;
                             }
                         }
                     }
