@@ -57,6 +57,7 @@ main :: proc() {
 			split += 1
 		}
 		if split == len(line) {continue} 	// invalid line
+											
 
 		n_entries += 1
 		city := line[:split]
