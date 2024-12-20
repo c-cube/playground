@@ -1,0 +1,9 @@
+[package]
+name = "redis-egui"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+eframe = "*"  # or latest version
+egui = "*"    # or latest version
+redis = "0.23"   # or latest version
