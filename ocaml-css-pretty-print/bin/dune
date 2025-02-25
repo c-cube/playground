@@ -1,0 +1,4 @@
+(executable
+ (public_name foo)
+ (name main)
+ (libraries tiny_httpd tiny_httpd.html))
