@@ -1,0 +1,4 @@
+(executable
+ (public_name yolo4)
+ (name main)
+ (libraries yolo4))
