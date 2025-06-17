@@ -22,12 +22,15 @@ const MAX_INDEX: usize = (1 << 24) - 1;
 
 union OrEmpty<T> {
     full: ManuallyDrop<T>,
-    empty: (),
+    /// pointer for free list
+    prev_empty: i32,
 }
 
 pub struct Bank<T> {
     data: Vec<OrEmpty<T>>,
     present: BitVec,
+    /// Pointer to the beginning of empty list. negative means empty.
+    last_empty: i32,
     /// Current generation
     generation: Vec<Generation>,
     /// number of slots available in `data`
@@ -39,6 +42,7 @@ impl<T> Bank<T> {
         Bank {
             data: vec![],
             present: BitVec::new(),
+            last_empty: -1,
             generation: vec![],
             available_slots: 0,
         }
@@ -74,8 +78,8 @@ impl<T> Bank<T> {
     }
 
     pub fn alloc(&mut self, x: T) -> Result<Index<T>> {
-        let mut idx = usize::MAX;
-        let mut generation = 0;
+        let idx;
+        let generation;
         if self.available_slots == 0 {
             // need to allocate a new slot
             debug_assert_eq!(self.data.len(), self.generation.len());
@@ -93,26 +97,27 @@ impl<T> Bank<T> {
             self.generation.push(generation);
             self.present.push(true);
         } else {
-            // find a slot to reuse
-            for i in 0..self.data.len() {
-                if !self.present[i] {
-                    self.present.set(i, true);
-                    idx = i;
-                    generation = self.generation[i];
-                    self.available_slots -= 1;
-                    self.data[i] = OrEmpty {
-                        full: ManuallyDrop::new(x),
-                    };
-                    break;
-                }
-            }
+            // find a slot to reuse, using the linked list
+            assert!(self.last_empty >= 0);
+            idx = self.last_empty as usize;
+            debug_assert!(!self.present[idx]);
+
+            // SAFETY: `present` was false, so we have a list node
+            self.last_empty = unsafe { self.data[idx].prev_empty };
+
+            self.present.set(idx, true);
+            generation = self.generation[idx];
+            self.available_slots -= 1;
+            self.data[idx] = OrEmpty {
+                full: ManuallyDrop::new(x),
+            };
             debug_assert!(idx != usize::MAX); // we must have found an index
         };
 
-        idx = (idx << 8) | (generation as usize);
+        let idx_with_gen = (idx << 8) | (generation as usize);
 
-        debug_assert!(idx <= (u32::MAX as usize));
-        Ok(Index::from_u32(idx as u32))
+        debug_assert!(idx_with_gen <= (u32::MAX as usize));
+        Ok(Index::from_u32(idx_with_gen as u32))
     }
 
     #[inline]
@@ -137,13 +142,16 @@ impl<T> Bank<T> {
         }
 
         {
-            // remove the data
-            let mut local_or_empty = OrEmpty { empty: () };
+            // remove the data, by swapping it with a list element
+            let mut local_or_empty = OrEmpty {
+                prev_empty: self.last_empty,
+            };
             std::mem::swap(&mut self.data[idx], &mut local_or_empty);
 
             // SAFETY: `present` is true, so this must be full
             unsafe { ManuallyDrop::drop(&mut local_or_empty.full) };
         }
+        self.last_empty = idx as i32;
 
         *cur_gen = cur_gen.wrapping_add(1);
         self.present.set(idx, false);
@@ -158,7 +166,8 @@ impl<T> Drop for Bank<T> {
         // TODO: drop all items with `present` = true
         for (i, data) in self.data.iter_mut().enumerate() {
             if self.present[i] {
-                let mut local_or_empty = OrEmpty { empty: () };
+                // put garbage there
+                let mut local_or_empty = OrEmpty { prev_empty: 0 };
                 std::mem::swap(data, &mut local_or_empty);
                 self.present.set(i, false);
 
@@ -219,20 +228,23 @@ mod test {
     fn lotsa_allocs() {
         let mut bank = Bank::new();
 
-        let mut v = vec![];
-        for i in 0..1_000_000 {
-            let idx = bank.alloc(i).unwrap();
-            v.push(idx);
-        }
-        assert_eq!(1_000_000, bank.len());
+        const N: usize = 1_000_000;
+        for _attempt in 0..10 {
+            let mut v = vec![];
+            for i in 0..N {
+                let idx = bank.alloc(i).unwrap();
+                v.push(idx);
+            }
+            assert_eq!(N, bank.len());
 
-        for (i, &x) in v.iter().enumerate() {
-            assert_eq!(i, bank.get_copy(x));
-        }
+            for (i, &x) in v.iter().enumerate() {
+                assert_eq!(i, bank.get_copy(x));
+            }
 
-        for x in v.into_iter() {
-            bank.free(x).unwrap();
+            for x in v.into_iter() {
+                bank.free(x).unwrap();
+            }
+            assert_eq!(0, bank.len());
         }
-        assert_eq!(0, bank.len());
     }
 }
