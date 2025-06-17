@@ -1,39 +1,9 @@
-pub struct Index<T> {
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub struct Index {
     idx: u32,
-    phantom: PhantomData<*const T>,
 }
 
-use std::marker::PhantomData;
-
-impl<T> Copy for Index<T> {}
-impl<T> Clone for Index<T> {
-    fn clone(&self) -> Self {
-        Self {
-            idx: self.idx.clone(),
-            phantom: self.phantom.clone(),
-        }
-    }
-}
-
-impl<T> Eq for Index<T> {}
-impl<T> PartialEq for Index<T> {
-    fn eq(&self, other: &Self) -> bool {
-        self.idx == other.idx
-    }
-}
-
-impl<T> std::hash::Hash for Index<T> {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.idx.hash(state);
-    }
-}
-impl<T> std::fmt::Debug for Index<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.idx.fmt(f)
-    }
-}
-
-impl<T> Index<T> {
+impl Index {
     #[inline]
     pub fn index(self) -> usize {
         (self.idx >> 8) as usize
@@ -44,10 +14,18 @@ impl<T> Index<T> {
         (self.idx & 0b1111_1111) as u8
     }
 
+    #[inline]
     pub(crate) fn from_u32(i: u32) -> Self {
-        Self {
-            idx: i,
-            phantom: PhantomData,
-        }
+        Self { idx: i }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_size() {
+        assert_eq!(std::mem::size_of::<Index>(), 4);
     }
 }

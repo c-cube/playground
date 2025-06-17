@@ -1,138 +1,124 @@
-use bitvec::vec::BitVec;
+//! Bank for arrays and slices
 
-use crate::index::Index;
+pub use crate::error::{Error, Result};
+use crate::{bank::Bank, index::Index};
 
-#[derive(thiserror::Error, Debug)]
-pub enum Error {
-    #[error("bank is full")]
-    Full,
-    #[error("invalid index {0}")]
-    InvalidIndex(u32),
-
-    #[error("wrong generation for index {0}")]
-    WrongGeneration(u32),
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub struct ArrayIndex {
+    idx: Index,
+    len: u32,
 }
 
-pub type Result<T> = std::result::Result<T, Error>;
-
-type Generation = u8;
-
-/// Out of 32 bits, 24 are for the index, 8 are for the generation
-const MAX_INDEX: usize = (1 << 24) - 1;
-
-pub struct Bank<T> {
-    data: Vec<T>,
-    present: BitVec,
-    /// Current generation
-    generation: Vec<Generation>,
-    /// number of slots available in `data`
-    available_slots: usize,
+pub struct ArrayBank<T> {
+    bank1: Bank<[T; 1]>,
+    bank2: Bank<[T; 2]>,
+    bank3: Bank<[T; 3]>,
+    bank_n: Bank<Box<[T]>>,
 }
 
-impl<T> Bank<T>
+#[inline]
+fn const_slice_to<T, const N: usize>(x: &[T]) -> [T; N]
 where
-    T: Copy + Default,
+    T: Clone,
+{
+    let arr: &[T; N] = x.try_into().unwrap();
+    arr.clone()
+}
+
+impl<T> ArrayBank<T>
+where
+    T: Clone,
 {
     pub fn new() -> Self {
-        Bank {
-            data: vec![],
-            present: BitVec::new(),
-            generation: vec![],
-            available_slots: 0,
+        Self {
+            bank1: Bank::new(),
+            bank2: Bank::new(),
+            bank3: Bank::new(),
+            bank_n: Bank::new(),
         }
     }
 
     /// Number of items in the bank.
-    pub fn len(&self) -> usize {
-        self.data.len() - self.available_slots
-    }
-
-    pub fn get(&self, x: Index<T>) -> T {
-        let idx = x.index();
-        assert!(self.present[idx]);
-        debug_assert_eq!(self.generation[idx], x.generation());
-        self.data[idx]
-    }
-
-    pub fn try_get(&self, x: Index<T>) -> Option<T> {
-        let idx = x.index();
-        if idx >= self.data.len() {
-            return None;
-        }
-        if !self.present[idx] {
-            return None;
-        }
-        if self.generation[idx] != x.generation() {
-            return None;
-        }
-
-        // SAFETY: entry is full because `present` is true
-        Some(self.data[idx])
-    }
-
-    pub fn alloc(&mut self, x: T) -> Result<Index<T>> {
-        let idx;
-        let generation;
-        if self.available_slots == 0 {
-            // need to allocate a new slot
-            debug_assert_eq!(self.data.len(), self.generation.len());
-            debug_assert_eq!(self.data.len(), self.present.len());
-            idx = self.data.len();
-
-            if idx > MAX_INDEX as usize {
-                return Err(Error::Full);
-            }
-
-            self.data.push(x);
-            generation = 1;
-            self.generation.push(generation);
-            self.present.push(true);
-        } else {
-            // find a slot to reuse
-
-            match self.present.iter_zeros().next() {
-                Some(i) => {
-                    self.present.set(i, true);
-                    idx = i;
-                    generation = self.generation[i];
-                    self.available_slots -= 1;
-                    self.data[i] = x;
-                }
-                None => unreachable!(),
-            }
-        }
-
-        let idx_with_gen = (idx << 8) | (generation as usize);
-
-        debug_assert!(idx_with_gen <= (u32::MAX as usize));
-        Ok(Index::from_u32(idx_with_gen as u32))
-    }
-
     #[inline]
-    pub fn alloc_with(&mut self, f: impl FnOnce() -> T) -> Result<Index<T>> {
-        let x = f();
-        return self.alloc(x);
+    pub fn len(&self) -> usize {
+        self.bank1.len() + self.bank2.len() + self.bank3.len() + self.bank_n.len()
     }
 
-    pub fn free(&mut self, x: Index<T>) -> Result<()> {
-        let idx = x.index();
-        if idx >= self.data.len() {
-            return Err(Error::InvalidIndex(idx as u32));
+    pub fn get(&self, x: ArrayIndex) -> &[T] {
+        match x.len {
+            0 => &[],
+            1 => self.bank1.get(x.idx).as_slice(),
+            2 => self.bank2.get(x.idx).as_slice(),
+            3 => self.bank3.get(x.idx).as_slice(),
+            _ => &*self.bank_n.get(x.idx),
+        }
+    }
+
+    pub fn try_get(&self, x: ArrayIndex) -> Option<&[T]> {
+        Some(match x.len {
+            0 => &[],
+            1 => self.bank1.try_get(x.idx)?.as_slice(),
+            2 => self.bank2.try_get(x.idx)?.as_slice(),
+            3 => self.bank3.try_get(x.idx)?.as_slice(),
+            _ => &*self.bank_n.try_get(x.idx)?,
+        })
+    }
+
+    pub fn alloc(&mut self, x: &[T]) -> Result<ArrayIndex> {
+        if x.len() > u32::MAX as usize {
+            return Err(Error::SliceTooBig);
         }
 
-        if !self.present[idx] {
-            return Err(Error::InvalidIndex(idx as u32));
+        let len = x.len();
+        let idx = match len {
+            0 => Index::from_u32(0),
+            1 => self.bank1.alloc(const_slice_to(x))?,
+            2 => self.bank2.alloc(const_slice_to(x))?,
+            3 => self.bank3.alloc(const_slice_to(x))?,
+            _ => {
+                let v: Vec<_> = x.iter().cloned().collect();
+                self.bank_n.alloc(v.into_boxed_slice())?
+            }
+        };
+        Ok(ArrayIndex {
+            idx,
+            len: len as u32,
+        })
+    }
+
+    pub fn alloc_iter(&mut self, i: impl IntoIterator<Item = T>) -> Result<ArrayIndex> {
+        let v: Vec<_> = i.into_iter().collect();
+        self.alloc(&v)
+    }
+
+    pub fn free(&mut self, x: ArrayIndex) -> Result<()> {
+        match x.len {
+            0 => (),
+            1 => self.bank1.free(x.idx)?,
+            2 => self.bank2.free(x.idx)?,
+            3 => self.bank3.free(x.idx)?,
+            _ => self.bank_n.free(x.idx)?,
         }
-
-        let cur_gen = &mut self.generation[idx];
-        if *cur_gen != x.generation() {
-            return Err(Error::WrongGeneration(idx as u32));
-        }
-
-        *cur_gen = cur_gen.wrapping_add(1);
-        self.present.set(idx, false);
-        self.available_slots += 1;
-
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn alloc_some() {
+        let mut bank = ArrayBank::new();
+
+        let a1 = bank.alloc(&[1, 2, 3]).unwrap();
+        let a2 = bank.alloc(&[1]).unwrap();
+        let a3 = bank.alloc(&[42]).unwrap();
+
+        assert_eq!(3, bank.len());
+
+        assert_eq!(bank.get(a1), &[1, 2, 3]);
+        assert_eq!(bank.get(a3), &[42]);
+        assert_eq!(bank.get(a2), &[1]);
     }
 }

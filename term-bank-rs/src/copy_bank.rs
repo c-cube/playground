@@ -1,19 +1,7 @@
 use bitvec::vec::BitVec;
 
+pub use crate::error::{Error, Result};
 use crate::index::Index;
-
-#[derive(thiserror::Error, Debug)]
-pub enum Error {
-    #[error("bank is full")]
-    Full,
-    #[error("invalid index {0}")]
-    InvalidIndex(u32),
-
-    #[error("wrong generation for index {0}")]
-    WrongGeneration(u32),
-}
-
-pub type Result<T> = std::result::Result<T, Error>;
 
 type Generation = u8;
 
@@ -43,18 +31,20 @@ where
     }
 
     /// Number of items in the bank.
+    #[inline]
     pub fn len(&self) -> usize {
         self.data.len() - self.available_slots
     }
 
-    pub fn get(&self, x: Index<T>) -> T {
+    #[inline]
+    pub fn get(&self, x: Index) -> T {
         let idx = x.index();
         assert!(self.present[idx]);
         debug_assert_eq!(self.generation[idx], x.generation());
         self.data[idx]
     }
 
-    pub fn try_get(&self, x: Index<T>) -> Option<T> {
+    pub fn try_get(&self, x: Index) -> Option<T> {
         let idx = x.index();
         if idx >= self.data.len() {
             return None;
@@ -70,7 +60,7 @@ where
         Some(self.data[idx])
     }
 
-    pub fn alloc(&mut self, x: T) -> Result<Index<T>> {
+    pub fn alloc(&mut self, x: T) -> Result<Index> {
         let idx;
         let generation;
         if self.available_slots == 0 {
@@ -109,12 +99,12 @@ where
     }
 
     #[inline]
-    pub fn alloc_with(&mut self, f: impl FnOnce() -> T) -> Result<Index<T>> {
+    pub fn alloc_with(&mut self, f: impl FnOnce() -> T) -> Result<Index> {
         let x = f();
         return self.alloc(x);
     }
 
-    pub fn free(&mut self, x: Index<T>) -> Result<()> {
+    pub fn free(&mut self, x: Index) -> Result<()> {
         let idx = x.index();
         if idx >= self.data.len() {
             return Err(Error::InvalidIndex(idx as u32));
@@ -144,8 +134,6 @@ mod test {
     #[test]
     fn test_size() {
         assert_eq!(std::mem::size_of::<Generation>(), 1);
-        assert_eq!(std::mem::size_of::<Index<i32>>(), 4);
-        assert_eq!(std::mem::size_of::<Index<String>>(), 4);
     }
 
     #[test]
