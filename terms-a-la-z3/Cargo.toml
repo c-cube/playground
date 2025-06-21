@@ -1,0 +1,7 @@
+[package]
+name = "term-a-la-z3"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+smallvec = "1.15.1"
