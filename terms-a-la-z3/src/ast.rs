@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     fmt::Debug,
     ptr::NonNull,
     sync::atomic::{AtomicU32, Ordering},
@@ -103,16 +104,13 @@ macro_rules! builder {
     ($mk: ident, $tag: expr, $ty: ty) => {
         #[allow(unsafe_code)]
         pub fn $mk(x: $ty) -> Term {
-            eprintln!("build term tag={:?}", $tag);
             let ptr_box = Box::new(TermView {
                 tag: $tag,
                 rc: AtomicU32::new(1),
                 value: x,
             });
             let ptr = unsafe { NonNull::new_unchecked(Box::into_raw(ptr_box)) };
-            eprintln!("ptr={:?}", ptr.addr());
             let ptr_erased = unsafe { ptr.cast::<TermView<()>>() };
-            eprintln!("  erased term");
             Term(ptr_erased)
         }
     };
@@ -203,7 +201,6 @@ impl Drop for Term {
         let view: &TermView<()> = unsafe { self.0.as_ref() };
         if view.rc.fetch_sub(1, Ordering::AcqRel) == 1 {
             // time to drop the view
-            eprintln!("dropping term, rc=0");
             drop_inside(self);
         }
     }
@@ -211,11 +208,6 @@ impl Drop for Term {
 
 impl Debug for Term {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        eprintln!(
-            "debug for term with tag={:?} addr={:?}",
-            self.tag(),
-            self.0.addr()
-        );
         match self.view() {
             TermRef::Var(v) => write!(f, "?{}", v.idx),
             TermRef::BVar(v) => write!(f, "bvar{}", v.dbidx),
@@ -226,6 +218,36 @@ impl Debug for Term {
                 write!(f, "bind({:?}, {:?}, {:?}", b.binder, b.var, b.body)
             }
         }
+    }
+}
+
+impl Term {
+    pub fn size_tree(self: &Term) -> usize {
+        let mut size = 0;
+        let mut stack = vec![self];
+
+        while let Some(t) = stack.pop() {
+            size += 1;
+            match t.view() {
+                TermRef::Var(_) | TermRef::BVar(_) | TermRef::Const(_) => (),
+                TermRef::AppBin(app) => {
+                    stack.push(&app.f);
+                    stack.push(&app.arg);
+                }
+                TermRef::App(app) => {
+                    stack.push(&app.f);
+                    for a in &app.args {
+                        stack.push(a)
+                    }
+                }
+                TermRef::Bind(bind) => {
+                    stack.push(&bind.binder);
+                    stack.push(&bind.var);
+                    stack.push(&bind.body);
+                }
+            }
+        }
+        size
     }
 }
 
@@ -262,7 +284,31 @@ mod test {
             }),
         });
 
-        eprintln!("debugging now...");
         eprintln!("t: {:?}", t)
+    }
+
+    #[test]
+    fn build_many() {
+        let f = Term::mk_const(Const {
+            name: "f".to_string().into_boxed_str(),
+        });
+        let a = Term::mk_const(Const {
+            name: "a".to_string().into_boxed_str(),
+        });
+        let tau = Term::mk_const(Const {
+            name: "tau".to_string().into_boxed_str(),
+        });
+
+        for _i in 0..20 {
+            let mut t = a.clone();
+            for i in 0..100 {
+                t = Term::mk_app(App {
+                    f: f.clone(),
+                    args: smallvec::smallvec![t.clone(), t.clone(), t.clone()],
+                })
+            }
+            // TODO: how do we compute this??
+            // eprintln!("term.size={}", t.size_tree())
+        }
     }
 }
