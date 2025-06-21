@@ -72,6 +72,7 @@ macro_rules! tag2enum {
 }
 */
 
+#[repr(C)]
 pub struct TermView<T> {
     tag: Tag,
     rc: AtomicU32,
@@ -102,13 +103,16 @@ macro_rules! builder {
     ($mk: ident, $tag: expr, $ty: ty) => {
         #[allow(unsafe_code)]
         pub fn $mk(x: $ty) -> Term {
-            let ptr = Box::new(TermView {
+            eprintln!("build term tag={:?}", $tag);
+            let ptr_box = Box::new(TermView {
                 tag: $tag,
                 rc: AtomicU32::new(1),
                 value: x,
             });
-            let ptr_erased =
-                unsafe { NonNull::new_unchecked(Box::into_raw(ptr)).cast::<TermView<()>>() };
+            let ptr = unsafe { NonNull::new_unchecked(Box::into_raw(ptr_box)) };
+            eprintln!("ptr={:?}", ptr.addr());
+            let ptr_erased = unsafe { ptr.cast::<TermView<()>>() };
+            eprintln!("  erased term");
             Term(ptr_erased)
         }
     };
@@ -199,6 +203,7 @@ impl Drop for Term {
         let view: &TermView<()> = unsafe { self.0.as_ref() };
         if view.rc.fetch_sub(1, Ordering::AcqRel) == 1 {
             // time to drop the view
+            eprintln!("dropping term, rc=0");
             drop_inside(self);
         }
     }
@@ -206,6 +211,11 @@ impl Drop for Term {
 
 impl Debug for Term {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        eprintln!(
+            "debug for term with tag={:?} addr={:?}",
+            self.tag(),
+            self.0.addr()
+        );
         match self.view() {
             TermRef::Var(v) => write!(f, "?{}", v.idx),
             TermRef::BVar(v) => write!(f, "bvar{}", v.dbidx),
@@ -252,6 +262,7 @@ mod test {
             }),
         });
 
+        eprintln!("debugging now...");
         eprintln!("t: {:?}", t)
     }
 }
