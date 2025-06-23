@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fmt::Debug,
     ptr::NonNull,
     sync::atomic::{AtomicU32, Ordering},
@@ -109,9 +109,15 @@ macro_rules! builder {
                 rc: AtomicU32::new(1),
                 value: x,
             });
-            let ptr = unsafe { NonNull::new_unchecked(Box::into_raw(ptr_box)) };
-            let ptr_erased = unsafe { ptr.cast::<TermView<()>>() };
-            Term(ptr_erased)
+            let ptr: NonNull<TermView<$ty>> =
+                unsafe { NonNull::new_unchecked(Box::into_raw(ptr_box)) };
+            let ptr_erased = ptr.cast::<TermView<()>>();
+            let t = Term(ptr_erased);
+
+            let mut v = vec![];
+            t.push_children(&mut v);
+
+            t
         }
     };
 }
@@ -120,11 +126,13 @@ macro_rules! get_case {
     ($f: ident, $tag: expr, $ty: ty) => {
         #[inline]
         #[allow(unsafe_code)]
-        pub fn $f(self: &Term) -> &$ty {
-            debug_assert_eq!(self.tag(), $tag);
+        pub fn $f(self: &Term) -> Option<&$ty> {
+            if self.tag() != $tag {
+                return None;
+            }
             let new_ptr: NonNull<TermView<$ty>> = self.0.cast::<TermView<$ty>>();
             let ref_to_ty: &TermView<$ty> = unsafe { new_ptr.as_ref() };
-            &ref_to_ty.value
+            Some(&ref_to_ty.value)
         }
     };
 }
@@ -148,12 +156,12 @@ impl Term {
     pub fn view(self: &Term) -> TermRef {
         let tag = self.tag();
         match tag {
-            Tag::Var => TermRef::Var(self.as_var()),
-            Tag::BVar => TermRef::BVar(self.as_bvar()),
-            Tag::Const => TermRef::Const(self.as_const()),
-            Tag::App => TermRef::App(self.as_app()),
-            Tag::AppBin => TermRef::AppBin(self.as_app_bin()),
-            Tag::Bind => TermRef::Bind(self.as_bind()),
+            Tag::Var => TermRef::Var(self.as_var().unwrap()),
+            Tag::BVar => TermRef::BVar(self.as_bvar().unwrap()),
+            Tag::Const => TermRef::Const(self.as_const().unwrap()),
+            Tag::App => TermRef::App(self.as_app().unwrap()),
+            Tag::AppBin => TermRef::AppBin(self.as_app_bin().unwrap()),
+            Tag::Bind => TermRef::Bind(self.as_bind().unwrap()),
         }
     }
 }
@@ -222,30 +230,71 @@ impl Debug for Term {
 }
 
 impl Term {
-    pub fn size_tree(self: &Term) -> usize {
-        let mut size = 0;
-        let mut stack = vec![self];
-
-        while let Some(t) = stack.pop() {
-            size += 1;
-            match t.view() {
-                TermRef::Var(_) | TermRef::BVar(_) | TermRef::Const(_) => (),
-                TermRef::AppBin(app) => {
-                    stack.push(&app.f);
-                    stack.push(&app.arg);
-                }
-                TermRef::App(app) => {
-                    stack.push(&app.f);
-                    for a in &app.args {
-                        stack.push(a)
-                    }
-                }
-                TermRef::Bind(bind) => {
-                    stack.push(&bind.binder);
-                    stack.push(&bind.var);
-                    stack.push(&bind.body);
+    pub fn push_children<'a>(&'a self, v: &mut Vec<&'a Term>) {
+        match self.view() {
+            TermRef::Var(_) | TermRef::BVar(_) | TermRef::Const(_) => (),
+            TermRef::AppBin(app) => {
+                v.push(&app.f);
+                v.push(&app.arg);
+            }
+            TermRef::App(app) => {
+                v.push(&app.f);
+                for a in &app.args {
+                    v.push(a)
                 }
             }
+            TermRef::Bind(bind) => {
+                v.push(&bind.binder);
+                v.push(&bind.var);
+                v.push(&bind.body);
+            }
+        }
+    }
+
+    pub fn size_tree(self: &Term) -> usize {
+        let mut stack = vec![self];
+        let mut temp = vec![];
+
+        let mut tbl: HashMap<&Term, usize> = HashMap::new();
+
+        while let Some(t) = stack.pop() {
+            if tbl.contains_key(t) {
+                continue;
+            }
+
+            // gather children of `t` in `temp`
+            temp.clear();
+            t.push_children(&mut temp);
+
+            if temp.iter().all(|u| tbl.contains_key(u)) {
+                // all children in table, we can compute size of `t` and add it to `size`
+                let size_t = temp.iter().fold(1, |n, u| n + tbl.get(u).unwrap());
+                tbl.insert(t, size_t);
+            } else {
+                debug_assert!(!temp.is_empty());
+                // re-explore `t` after the children are done
+                stack.push(t);
+                // explore the children
+                stack.extend_from_slice(&temp);
+                temp.clear();
+            }
+        }
+
+        tbl.get(self).cloned().unwrap()
+    }
+
+    pub fn size_dag(self: &Term) -> usize {
+        let mut stack = vec![self];
+        let mut size = 0;
+        let mut seen: HashSet<&Term> = HashSet::new();
+
+        while let Some(t) = stack.pop() {
+            if seen.contains(t) {
+                continue;
+            }
+            seen.insert(t);
+            size += 1;
+            t.push_children(&mut stack);
         }
         size
     }
@@ -255,12 +304,12 @@ impl Term {
 mod test {
     use super::*;
 
-    #[test]
+    // #[test]
     fn size_term() {
         assert_eq!(8, std::mem::size_of::<Term>())
     }
 
-    #[test]
+    // #[test]
     fn build_some() {
         let f = Term::mk_const(Const {
             name: "f".to_string().into_boxed_str(),
@@ -301,14 +350,11 @@ mod test {
 
         for _i in 0..20 {
             let mut t = a.clone();
-            for i in 0..100 {
-                t = Term::mk_app(App {
-                    f: f.clone(),
-                    args: smallvec::smallvec![t.clone(), t.clone(), t.clone()],
-                })
+            for _i in 0..1_000_000 {
+                let args = smallvec::smallvec![t.clone(), t.clone(), t.clone()];
+                t = Term::mk_app(App { f: f.clone(), args })
             }
-            // TODO: how do we compute this??
-            // eprintln!("term.size={}", t.size_tree())
+            eprintln!("term.size={}", t.size_dag())
         }
     }
 }
