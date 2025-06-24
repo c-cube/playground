@@ -8,9 +8,17 @@ type Generation = u8;
 /// Out of 32 bits, 24 are for the index, 8 are for the generation
 const MAX_INDEX: usize = (1 << 24) - 1;
 
-pub struct Bank<T> {
-    data: Vec<T>,
+union OrEmpty<T: Copy> {
+    full: T,
+    /// pointer for free list
+    prev_empty: i32,
+}
+
+pub struct Bank<T: Copy> {
+    data: Vec<OrEmpty<T>>,
     present: BitVec,
+    /// Pointer to the beginning of empty list. negative means empty.
+    last_empty: i32,
     /// Current generation
     generation: Vec<Generation>,
     /// number of slots available in `data`
@@ -25,6 +33,7 @@ where
         Bank {
             data: vec![],
             present: BitVec::new(),
+            last_empty: -1,
             generation: vec![],
             available_slots: 0,
         }
@@ -41,7 +50,8 @@ where
         let idx = x.index();
         assert!(self.present[idx]);
         debug_assert_eq!(self.generation[idx], x.generation());
-        self.data[idx]
+        // SAFETY: entry is full because `present` is true
+        unsafe { self.data[idx].full }
     }
 
     pub fn try_get(&self, x: Index) -> Option<T> {
@@ -57,7 +67,7 @@ where
         }
 
         // SAFETY: entry is full because `present` is true
-        Some(self.data[idx])
+        Some(unsafe { self.data[idx].full })
     }
 
     pub fn alloc(&mut self, x: T) -> Result<Index> {
@@ -73,24 +83,25 @@ where
                 return Err(Error::Full);
             }
 
-            self.data.push(x);
+            self.data.push(OrEmpty { full: x });
             generation = 1;
             self.generation.push(generation);
             self.present.push(true);
         } else {
-            // find a slot to reuse
+            // find a slot to reuse, using the linked list
+            assert!(self.last_empty >= 0);
+            idx = self.last_empty as usize;
+            debug_assert!(!self.present[idx]);
 
-            match self.present.iter_zeros().next() {
-                Some(i) => {
-                    self.present.set(i, true);
-                    idx = i;
-                    generation = self.generation[i];
-                    self.available_slots -= 1;
-                    self.data[i] = x;
-                }
-                None => unreachable!(),
-            }
-        }
+            // SAFETY: `present` was false, so we have a list node
+            self.last_empty = unsafe { self.data[idx].prev_empty };
+
+            self.present.set(idx, true);
+            generation = self.generation[idx];
+            self.available_slots -= 1;
+            self.data[idx] = OrEmpty { full: x };
+            debug_assert!(idx != usize::MAX); // we must have found an index
+        };
 
         let idx_with_gen = (idx << 8) | (generation as usize);
 
@@ -118,6 +129,13 @@ where
         if *cur_gen != x.generation() {
             return Err(Error::WrongGeneration(idx as u32));
         }
+
+        // remove the data. No need to drop it, it's Copy
+        self.data[idx] = OrEmpty {
+            prev_empty: self.last_empty,
+        };
+
+        self.last_empty = idx as i32;
 
         *cur_gen = cur_gen.wrapping_add(1);
         self.present.set(idx, false);
@@ -164,7 +182,7 @@ mod test {
     fn lotsa_allocs() {
         let mut bank = Bank::new();
 
-        const N: usize = 1_000;
+        const N: usize = 1_000_000;
         for _attempt in 0..2 {
             let mut v = vec![];
             for i in 0..N {

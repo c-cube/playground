@@ -133,13 +133,15 @@ impl<T> Bank<T> {
 
         {
             // remove the data, by swapping it with a list element
-            let mut local_or_empty = OrEmpty {
-                prev_empty: self.last_empty,
-            };
-            std::mem::swap(&mut self.data[idx], &mut local_or_empty);
+            let mut data = std::mem::replace(
+                &mut self.data[idx],
+                OrEmpty {
+                    prev_empty: self.last_empty,
+                },
+            );
 
             // SAFETY: `present` is true, so this must be full
-            unsafe { ManuallyDrop::drop(&mut local_or_empty.full) };
+            unsafe { ManuallyDrop::drop(&mut data.full) };
         }
         self.last_empty = idx as i32;
 
@@ -157,12 +159,11 @@ impl<T> Drop for Bank<T> {
         for (i, data) in self.data.iter_mut().enumerate() {
             if self.present[i] {
                 // put garbage there
-                let mut local_or_empty = OrEmpty { prev_empty: 0 };
-                std::mem::swap(data, &mut local_or_empty);
+                let mut data = std::mem::replace(data, OrEmpty { prev_empty: 0 });
                 self.present.set(i, false);
 
                 // SAFETY: present is true, so this must be full
-                unsafe { ManuallyDrop::drop(&mut local_or_empty.full) };
+                unsafe { ManuallyDrop::drop(&mut data.full) };
             }
         }
     }
