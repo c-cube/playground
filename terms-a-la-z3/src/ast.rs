@@ -1,6 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     fmt::Debug,
+    mem,
     ptr::NonNull,
     sync::atomic::{AtomicU32, Ordering},
 };
@@ -76,6 +77,8 @@ macro_rules! tag2enum {
 #[repr(C)]
 pub struct TermView<T> {
     tag: Tag,
+    // pad: u8
+    // bits: u16
     rc: AtomicU32,
     value: T,
 }
@@ -112,12 +115,7 @@ macro_rules! builder {
             let ptr: NonNull<TermView<$ty>> =
                 unsafe { NonNull::new_unchecked(Box::into_raw(ptr_box)) };
             let ptr_erased = ptr.cast::<TermView<()>>();
-            let t = Term(ptr_erased);
-
-            let mut v = vec![];
-            t.push_children(&mut v);
-
-            t
+            Term(ptr_erased)
         }
     };
 }
@@ -152,7 +150,6 @@ impl Term {
     define_cstor!(mk_app_bin, as_app_bin, Tag::AppBin, AppBin);
     define_cstor!(mk_bind, as_bind, Tag::Bind, Bind);
 
-    #[allow(unsafe_code)]
     pub fn view(self: &Term) -> TermRef {
         let tag = self.tag();
         match tag {
@@ -163,6 +160,13 @@ impl Term {
             Tag::AppBin => TermRef::AppBin(self.as_app_bin().unwrap()),
             Tag::Bind => TermRef::Bind(self.as_bind().unwrap()),
         }
+    }
+
+    #[inline]
+    pub(crate) fn into_raw(self: &Term) -> NonNull<TermView<()>> {
+        let ptr = self.0;
+        mem::forget(self);
+        ptr
     }
 }
 
@@ -177,30 +181,8 @@ impl Clone for Term {
 
 /// Actually drop the term
 #[allow(unsafe_code)]
-fn drop_inside(t: &mut Term) {
-    let tag: Tag = t.tag();
-    unsafe {
-        match tag {
-            Tag::Var => {
-                drop(Box::from_raw(cast_to!(t, tag, Var).as_ptr()));
-            }
-            Tag::BVar => {
-                drop(Box::from_raw(cast_to!(t, tag, BVar).as_ptr()));
-            }
-            Tag::Const => {
-                drop(Box::from_raw(cast_to!(t, tag, Const).as_ptr()));
-            }
-            Tag::App => {
-                drop(Box::from_raw(cast_to!(t, tag, App).as_ptr()));
-            }
-            Tag::AppBin => {
-                drop(Box::from_raw(cast_to!(t, tag, AppBin).as_ptr()));
-            }
-            Tag::Bind => {
-                drop(Box::from_raw(cast_to!(t, tag, Bind).as_ptr()));
-            }
-        }
-    }
+fn drop_inside(t: &Term) {
+    drop(unsafe { Box::from_raw(t.0.as_ptr()) });
 }
 
 impl Drop for Term {
@@ -208,8 +190,21 @@ impl Drop for Term {
     fn drop(&mut self) {
         let view: &TermView<()> = unsafe { self.0.as_ref() };
         if view.rc.fetch_sub(1, Ordering::AcqRel) == 1 {
+            drop(view);
+            let mut stack: SmallVec<[&Term; 16]> = SmallVec::new();
+
+            self.iter_children(|u| stack.push(u));
+
             // time to drop the view
             drop_inside(self);
+
+            while let Some(t) = stack.pop() {
+                let view_t: &TermView<()> = unsafe { self.0.as_ref() };
+                if view_t.rc.fetch_sub(1, Ordering::AcqRel) == 1 {
+                    t.iter_children(|u| stack.push(u));
+                    drop_inside(t);
+                }
+            }
         }
     }
 }
@@ -230,23 +225,23 @@ impl Debug for Term {
 }
 
 impl Term {
-    pub fn push_children<'a>(&'a self, v: &mut Vec<&'a Term>) {
+    pub fn iter_children<'a>(&'a self, mut f: impl FnMut(&'a Term)) {
         match self.view() {
             TermRef::Var(_) | TermRef::BVar(_) | TermRef::Const(_) => (),
             TermRef::AppBin(app) => {
-                v.push(&app.f);
-                v.push(&app.arg);
+                f(&app.f);
+                f(&app.arg);
             }
             TermRef::App(app) => {
-                v.push(&app.f);
+                f(&app.f);
                 for a in &app.args {
-                    v.push(a)
+                    f(a)
                 }
             }
             TermRef::Bind(bind) => {
-                v.push(&bind.binder);
-                v.push(&bind.var);
-                v.push(&bind.body);
+                f(&bind.binder);
+                f(&bind.var);
+                f(&bind.body);
             }
         }
     }
@@ -264,7 +259,7 @@ impl Term {
 
             // gather children of `t` in `temp`
             temp.clear();
-            t.push_children(&mut temp);
+            t.iter_children(|u| temp.push(u));
 
             if temp.iter().all(|u| tbl.contains_key(u)) {
                 // all children in table, we can compute size of `t` and add it to `size`
@@ -286,7 +281,7 @@ impl Term {
     pub fn size_dag(self: &Term) -> usize {
         let mut stack = vec![self];
         let mut size = 0;
-        let mut seen: HashSet<&Term> = HashSet::new();
+        let mut seen: fnv::FnvHashSet<&Term> = fnv::FnvHashSet::default();
 
         while let Some(t) = stack.pop() {
             if seen.contains(t) {
@@ -294,7 +289,11 @@ impl Term {
             }
             seen.insert(t);
             size += 1;
-            t.push_children(&mut stack);
+            t.iter_children(|u| {
+                if !seen.contains(u) {
+                    stack.push(u)
+                }
+            });
         }
         size
     }
