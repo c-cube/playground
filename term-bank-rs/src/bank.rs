@@ -2,7 +2,7 @@ use std::mem::ManuallyDrop;
 
 pub use crate::error::{Error, Result};
 use crate::index::Index;
-use bitvec::vec::BitVec;
+use bit_vec::BitVec;
 
 type Generation = u8;
 

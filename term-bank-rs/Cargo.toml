@@ -4,5 +4,5 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-bitvec = {version="1", default-features=false, features=["alloc"]}
+bit-vec = "0.8"
 thiserror = "2.0.12"

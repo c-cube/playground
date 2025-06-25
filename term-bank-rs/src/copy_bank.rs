@@ -1,4 +1,4 @@
-use bitvec::vec::BitVec;
+use bit_vec::BitVec;
 
 pub use crate::error::{Error, Result};
 use crate::index::Index;
@@ -183,7 +183,7 @@ mod test {
         let mut bank = Bank::new();
 
         const N: usize = 1_000_000;
-        for _attempt in 0..2 {
+        for _attempt in 0..10 {
             let mut v = vec![];
             for i in 0..N {
                 let idx = bank.alloc(i).unwrap();
