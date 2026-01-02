@@ -3,7 +3,7 @@ use std::{
     io::BufRead,
     path::PathBuf,
     sync::{
-        Arc, Mutex,
+        Mutex,
         atomic::{AtomicU64, Ordering},
     },
     time::Instant,
@@ -18,6 +18,9 @@ use regex::Regex;
 struct Cli {
     regex: Regex,
     dirs: Vec<String>,
+    /// Parallel version
+    #[arg(long)]
+    par: bool,
 }
 
 #[derive(Debug, Default)]
@@ -36,7 +39,7 @@ impl Stats {
     }
 }
 
-fn process_file(regex: &Regex, path: PathBuf, stats: Arc<Stats>) -> Result<()> {
+fn process_file(regex: &Regex, path: PathBuf, stats: &Stats) -> Result<()> {
     log::debug!("processing file {path:?}");
     stats.files.fetch_add(1, Ordering::SeqCst);
 
@@ -69,8 +72,15 @@ fn process_file(regex: &Regex, path: PathBuf, stats: Arc<Stats>) -> Result<()> {
     Ok(())
 }
 
+fn process_file_noerr(regex: &Regex, path: PathBuf, stats: &Stats) {
+    match process_file(regex, path, stats) {
+        Ok(()) => (),
+        Err(err) => stats.add_err(err),
+    }
+}
+
 /// Iterate on relevant files
-fn dir_entries(dir: String, stats: Arc<Stats>) -> impl Iterator<Item = PathBuf> {
+fn dir_entries(dir: String, stats: &Stats) -> impl Iterator<Item = PathBuf> {
     walkdir::WalkDir::new(dir).into_iter().filter_map(
         move |file: walkdir::Result<walkdir::DirEntry>| match file {
             Ok(f) if f.file_type().is_file() => Some(f.into_path()),
@@ -90,27 +100,26 @@ fn main() -> Result<()> {
 
     let t_start = Instant::now();
 
-    let stats = Arc::new(Stats::default());
+    let stats = Stats::default();
 
     {
-        let stats1 = stats.clone();
-        let stats2 = stats.clone();
-        cli.dirs
+        let dirs = cli
+            .dirs
             .iter()
             .cloned()
-            .flat_map(move |dir| dir_entries(dir, stats1.clone()))
-            // .par_bridge()
-            .for_each(
-                move |path| match process_file(&cli.regex, path, stats2.clone()) {
-                    Ok(()) => (),
-                    Err(err) => stats2.add_err(err),
-                },
-            )
+            .flat_map(|dir| dir_entries(dir, &stats));
+
+        if cli.par {
+            dirs.par_bridge()
+                .for_each(|p| process_file_noerr(&cli.regex, p.clone(), &stats))
+        } else {
+            dirs.for_each(|p| process_file_noerr(&cli.regex, p.clone(), &stats))
+        }
     }
 
     let t_stop = Instant::now();
 
-    log::info!("stats: {:?}", *stats);
+    log::info!("stats: {:?}", stats);
     log::info!("done in {:?}", t_stop - t_start);
     Ok(())
 }
