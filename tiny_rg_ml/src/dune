@@ -1,0 +1,6 @@
+(executable
+ (public_name tiny_rg_ml)
+ (name main)
+ (preprocess
+  (pps ppx_deriving.std))
+ (libraries containers moonpool unix iter))
