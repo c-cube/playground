@@ -69,7 +69,11 @@ fn process_file(cli: &Cli, path: PathBuf, stats: &Stats) -> Result<()> {
         byte_count += n;
         line_count += 1;
 
-        let line = &line_buf[0..n - 1];
+        let mut line = &line_buf[0..n];
+        if line.as_bytes()[n - 1] == b'\n' {
+            line = &line[0..n - 1];
+        }
+
         if regex.is_match(&line) {
             match_count += 1;
 
