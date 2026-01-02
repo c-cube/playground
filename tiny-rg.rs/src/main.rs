@@ -47,9 +47,12 @@ fn process_file(cli: &Cli, path: PathBuf, stats: &Stats) -> Result<()> {
     log::debug!("processing file {path:?}");
     stats.files.fetch_add(1, Ordering::SeqCst);
 
+    // avoid sharing internal state https://docs.rs/regex/latest/regex/#performance
+    let regex = cli.regex.clone();
+
     let mut file = std::io::BufReader::new(std::fs::File::open(&path)?);
 
-    let mut line_buf = String::with_capacity(64 * 1024);
+    let mut line_buf = String::with_capacity(8 * 1024);
     let mut line_count = 0;
     let mut match_count = 0;
 
@@ -63,7 +66,7 @@ fn process_file(cli: &Cli, path: PathBuf, stats: &Stats) -> Result<()> {
         line_count += 1;
 
         let line = &line_buf[0..n - 1];
-        if cli.regex.is_match(&line) {
+        if regex.is_match(&line) {
             match_count += 1;
 
             if cli.print {
