@@ -21,6 +21,9 @@ struct Cli {
     /// Parallel version
     #[arg(long)]
     par: bool,
+    /// Print the matches
+    #[arg(short, long)]
+    print: bool,
 }
 
 #[derive(Debug, Default)]
@@ -40,7 +43,7 @@ impl Stats {
     }
 }
 
-fn process_file(regex: &Regex, path: PathBuf, stats: &Stats) -> Result<()> {
+fn process_file(cli: &Cli, path: PathBuf, stats: &Stats) -> Result<()> {
     log::debug!("processing file {path:?}");
     stats.files.fetch_add(1, Ordering::SeqCst);
 
@@ -60,11 +63,13 @@ fn process_file(regex: &Regex, path: PathBuf, stats: &Stats) -> Result<()> {
         line_count += 1;
 
         let line = &line_buf[0..n - 1];
-        if regex.is_match(&line) {
+        if cli.regex.is_match(&line) {
             match_count += 1;
 
-            let _basename = path.file_name().unwrap_or(path.as_os_str()).display();
-            // println!("{_basename}: {line:?}");
+            if cli.print {
+                let basename = path.file_name().unwrap_or(path.as_os_str()).display();
+                println!("{basename}: {line}");
+            }
         }
     }
 
@@ -73,8 +78,8 @@ fn process_file(regex: &Regex, path: PathBuf, stats: &Stats) -> Result<()> {
     Ok(())
 }
 
-fn process_file_noerr(regex: &Regex, path: PathBuf, stats: &Stats) {
-    match process_file(regex, path, stats) {
+fn process_file_noerr(cli: &Cli, path: PathBuf, stats: &Stats) {
+    match process_file(cli, path, stats) {
         Ok(()) => (),
         Err(err) => stats.add_err(err),
     }
@@ -95,8 +100,10 @@ fn dir_entries(dir: String, stats: &Stats) -> impl Iterator<Item = PathBuf> {
 }
 
 fn main() -> Result<()> {
-    env_logger::try_init()?;
     let cli = Cli::try_parse().with_context(|| "parsing CLI")?;
+
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+        .try_init()?;
     log::debug!("cli: {cli:#?}");
 
     let t_start = Instant::now();
@@ -112,9 +119,9 @@ fn main() -> Result<()> {
 
         if cli.par {
             dirs.par_bridge()
-                .for_each(|p| process_file_noerr(&cli.regex, p.clone(), &stats))
+                .for_each(|p| process_file_noerr(&cli, p.clone(), &stats))
         } else {
-            dirs.for_each(|p| process_file_noerr(&cli.regex, p.clone(), &stats))
+            dirs.for_each(|p| process_file_noerr(&cli, p.clone(), &stats))
         }
     }
 
