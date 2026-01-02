@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::HashMap,
     io::BufRead,
     path::PathBuf,
     sync::{
@@ -28,14 +28,15 @@ struct Stats {
     files: AtomicU64,
     lines: AtomicU64,
     matches: AtomicU64,
-    errors: Mutex<HashSet<String>>,
+    errors: Mutex<HashMap<String, usize>>,
 }
 
 impl Stats {
     fn add_err(&self, err: impl Into<anyhow::Error>) {
         let err = format!("{}", err.into().root_cause());
         let mut errors = self.errors.lock().unwrap();
-        errors.insert(err);
+        let entry = errors.entry(err);
+        *entry.or_insert(0) += 1;
     }
 }
 
