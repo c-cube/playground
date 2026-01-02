@@ -6,3 +6,4 @@ target
 *.strace
 dist-newstyle
 .lake
+perf.data*
