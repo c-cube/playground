@@ -3,4 +3,4 @@
  (name main)
  (preprocess
   (pps ppx_deriving.std))
- (libraries containers moonpool unix iter))
+ (libraries containers moonpool unix pcre2 iter))

@@ -15,6 +15,6 @@
 (package
  (name tiny_rg_ml)
  (synopsis "small rg")
- (depends ocaml containers moonpool iter ppx_deriving))
+ (depends ocaml containers moonpool iter pcre2 ppx_deriving))
 
 ; See the complete stanza docs at https://dune.readthedocs.io/en/stable/reference/dune-project/index.html

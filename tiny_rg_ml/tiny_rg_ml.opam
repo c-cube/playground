@@ -10,6 +10,7 @@ depends: [
   "containers"
   "moonpool"
   "iter"
+  "pcre2"
   "ppx_deriving"
   "odoc" {with-doc}
 ]

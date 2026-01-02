@@ -4,8 +4,9 @@ module M = Moonpool
 let ( let@ ) = ( @@ )
 
 type cli = {
-  needle: string;
+  needle: Pcre2.regexp; [@opaque]
   dirs: string list;
+  print: bool;
   j: int option;
 }
 [@@deriving show]
@@ -39,9 +40,14 @@ let process_file ~(stats : stats) ~(cli : cli) (file : string) : unit =
        | Some line ->
          n_bytes := !n_bytes + String.length line;
          incr n_lines;
-         if CCString.mem ~sub:cli.needle line then
-           (* Printf.printf "%s: %s\n" file line; *)
+
+         (* validate *)
+         if not (String.is_valid_utf_8 line) then failwith "not unicode";
+
+         if Pcre2.pmatch ~rex:cli.needle line then (
+           if cli.print then Printf.printf "%s: %s\n" file line;
            incr n_matches
+         )
      done
    with _ -> Atomic.incr stats.errors);
 
@@ -66,9 +72,14 @@ let () =
   let dirs = ref [] in
   let needle = ref "" in
   let j = ref None in
+  let print = ref false in
 
   let opts =
-    [ "-j", Arg.Int (fun i -> j := Some i), " number of jobs" ] |> Arg.align
+    [
+      "-j", Arg.Int (fun i -> j := Some i), " number of jobs";
+      "--print", Arg.Set print, " print matches";
+    ]
+    |> Arg.align
   in
 
   let first = ref true in
@@ -81,7 +92,12 @@ let () =
         dirs := s :: !dirs)
     "";
 
-  let cli = { dirs = List.rev !dirs; needle = !needle; j = !j } in
+  if !needle = "" then failwith "no pattern provided";
+  if !dirs = [] then failwith "no directories provided";
+
+  let needle = Pcre2.regexp !needle in
+
+  let cli = { dirs = List.rev !dirs; needle; j = !j; print = !print } in
   Fmt.printf "cli: %a@." pp_cli cli;
 
   let t_start = Unix.gettimeofday () in
@@ -94,5 +110,6 @@ let () =
 
   Fmt.printf "done in %.2fs@.stats: %a@." elapsed pp_stats stats;
   Fmt.printf "MB/s: %.3f@." (float (Atomic.get stats.bytes) *. 1e-6 /. elapsed);
+  flush stdout;
 
   ()
