@@ -4,3 +4,5 @@ _build
 *.so
 target
 *.strace
+dist-newstyle
+.lake
