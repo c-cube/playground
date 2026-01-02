@@ -1,0 +1,12 @@
+[package]
+name = "tiny-rg"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.100"
+clap = { version = "4.5.53", features = ["derive"] }
+env_logger = { version = "0.11.8", default-features = false, features = ["auto-color", "color"] }
+log = "0.4.29"
+regex = "1.12.2"
+walkdir = "2.5.0"
