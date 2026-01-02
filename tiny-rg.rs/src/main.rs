@@ -4,7 +4,7 @@ use std::{
     path::PathBuf,
     sync::{
         Mutex,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
     },
     time::Instant,
 };
@@ -31,6 +31,7 @@ struct Stats {
     files: AtomicU64,
     lines: AtomicU64,
     matches: AtomicU64,
+    bytes: AtomicUsize,
     errors: Mutex<HashMap<String, usize>>,
 }
 
@@ -50,10 +51,12 @@ fn process_file(cli: &Cli, path: PathBuf, stats: &Stats) -> Result<()> {
     // avoid sharing internal state https://docs.rs/regex/latest/regex/#performance
     let regex = cli.regex.clone();
 
-    let mut file = std::io::BufReader::new(std::fs::File::open(&path)?);
+    const BUF_SIZE: usize = 64 * 1024;
+    let mut file = std::io::BufReader::with_capacity(BUF_SIZE, std::fs::File::open(&path)?);
 
-    let mut line_buf = String::with_capacity(8 * 1024);
+    let mut line_buf = String::with_capacity(BUF_SIZE);
     let mut line_count = 0;
+    let mut byte_count = 0;
     let mut match_count = 0;
 
     loop {
@@ -63,6 +66,7 @@ fn process_file(cli: &Cli, path: PathBuf, stats: &Stats) -> Result<()> {
             break;
         }
 
+        byte_count += n;
         line_count += 1;
 
         let line = &line_buf[0..n - 1];
@@ -78,6 +82,8 @@ fn process_file(cli: &Cli, path: PathBuf, stats: &Stats) -> Result<()> {
 
     stats.lines.fetch_add(line_count, Ordering::SeqCst);
     stats.matches.fetch_add(match_count, Ordering::Relaxed);
+    stats.bytes.fetch_add(byte_count, Ordering::Relaxed);
+
     Ok(())
 }
 
@@ -128,9 +134,13 @@ fn main() -> Result<()> {
         }
     }
 
-    let t_stop = Instant::now();
+    let elapsed = Instant::now() - t_start;
 
     log::info!("stats: {:?}", stats);
-    log::info!("done in {:?}", t_stop - t_start);
+    log::info!(
+        "done in {:?} ({:.2} MB/s)",
+        elapsed,
+        (stats.bytes.load(Ordering::SeqCst) as f64 * 1e-6) / elapsed.as_secs_f64()
+    );
     Ok(())
 }
