@@ -1,5 +1,5 @@
 RUST := ../2026-10-01-rust-embedded-tk
-SOCK ?= $(RUST)/chat.sock
+SOCK ?= /tmp/chat.sock
 BIN := _build/default/src/main.exe
 
 build:

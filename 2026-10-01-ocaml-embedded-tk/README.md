@@ -4,9 +4,9 @@ An OCaml port of `tkhost` from `../2026-10-01-rust-embedded-tk`, plus a chat cli
 for that project's Rust daemon, using the same `ui.tcl`.
 
 ```sh
-make daemon   # starts the Rust daemon (in ../2026-10-01-rust-embedded-tk) if needed
+make daemon   # starts the Rust daemon (in ../2026-10-01-rust-embedded-tk) on /tmp/chat.sock
 make client   # opens an OCaml GUI client in the background
-_build/default/src/main.exe -s ../2026-10-01-rust-embedded-tk/chat.sock -a NAME
+_build/default/src/main.exe -a NAME   # -s PATH to use another socket than /tmp/chat.sock
 ```
 
 ## tkhost

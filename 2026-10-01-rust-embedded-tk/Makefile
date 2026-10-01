@@ -1,5 +1,5 @@
 BIN := target/debug/tkchat
-SOCK ?= ./chat.sock
+SOCK ?= /tmp/chat.sock
 
 build:
 	@cargo build -q
