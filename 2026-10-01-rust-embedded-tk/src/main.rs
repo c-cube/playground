@@ -26,9 +26,10 @@ enum Cmd {
         /// Name to post as (random by default)
         #[arg(short, long)]
         author: Option<String>,
-        /// Tcl UI script, re-sourced when it changes on disk
-        #[arg(long, default_value = concat!(env!("CARGO_MANIFEST_DIR"), "/src/ui.tcl"))]
-        ui: PathBuf,
+        /// Tcl UI script to hot-reload instead of src/ui.tcl (the embedded
+        /// copy is still the fallback)
+        #[arg(long)]
+        ui: Option<PathBuf>,
     },
     /// Post a single message
     Send {
@@ -46,7 +47,13 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
         Cmd::Daemon => daemon::run(&cli.sock),
-        Cmd::Gui { author, ui } => gui::run(&cli.sock, author, ui),
+        Cmd::Gui { author, ui } => {
+            let mut file = tkhost::tcl_file!("src/ui.tcl");
+            if let Some(path) = ui {
+                file.path = path;
+            }
+            gui::run(&cli.sock, author, file)
+        }
         Cmd::Send { author, chan, msg } => {
             let author = author.or_else(|| std::env::var("USER").ok()).unwrap_or_else(|| "anon".into());
             let mut conn = proto::Conn::connect(&cli.sock)?;

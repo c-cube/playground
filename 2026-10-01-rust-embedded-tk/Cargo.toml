@@ -3,12 +3,13 @@ name = "tkchat"
 version = "0.1.0"
 edition = "2024"
 
+[workspace]
+members = ["tkhost"]
+
 [dependencies]
 anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive"] }
-clib = "0.2.4"
 rand = "0.10.3"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
-tcl = "0.1.9"
-tk = "0.1.10"
+tkhost = { path = "tkhost" }

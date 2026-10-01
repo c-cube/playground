@@ -1,0 +1,10 @@
+[package]
+name = "tkhost"
+version = "0.1.0"
+edition = "2024"
+description = "Host a Tcl/Tk UI in-process: message queues, shared state, hot reload"
+
+[dependencies]
+anyhow = "1.0.104"
+serde = "1.0.229"
+serde_json = "1.0.151"

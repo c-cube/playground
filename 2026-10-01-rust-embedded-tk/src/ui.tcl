@@ -1,23 +1,26 @@
-# tkchat UI. Re-sourced whenever this file changes, so it must be idempotent:
+# tkchat UI, hosted by tkhost (see tkhost/src/prelude.tcl for the rs:: API).
+# Re-sourced whenever this file changes, so it must be idempotent:
 # everything lives under .main, state lives in the ui namespace.
 #
-# Provided by rust: chat::author, chat::channels, chat::messages, chat::post,
-# chat::set_chans, chat::present.
-# Rust calls ui::on_msg $dict for each pushed message, ui::on_presence when
-# someone appears/disappears, and ui::on_reconnect after a daemon restart.
+# rs::call  channels | messages chan ?before? ?limit? | post chan msg
+# rs::cmd   author_color name
+# rs::on    msg {dict} | reconnect
+# rs::state author | connected | here:<chan>
+# rs::ui    joined (channels we announce presence in)
 
 catch {destroy .main}
 
 namespace eval ui {
     if {![info exists cur]} { variable cur general }
     if {![info exists joined]} { variable joined [list general] }
+    if {![info exists known]} { variable known {} }  ;# channels the daemon has
     variable oldest ""   ;# smallest message id shown in the log
-    variable shown {}    ;# channel names, in listbox order
+    variable newest ""   ;# largest one
+    variable shown {}    ;# channel names, in tree order
     variable unread
     if {![array exists unread]} { array set unread {} }
 }
 
-wm title . "tkchat — [chat::author]"
 wm geometry . 800x500
 
 ttk::frame .main
@@ -72,7 +75,6 @@ bind . <Alt-Up>   {ui::move_chan -1}
 bind . <Alt-Down> {ui::move_chan 1}
 
 $R.log tag configure ts -foreground gray50
-$R.log tag configure author -font TkHeadingFont -foreground SteelBlue4
 $R.log tag configure me -font TkHeadingFont -foreground DarkGreen
 
 # --- who's here ---
@@ -90,14 +92,27 @@ grid columnconfigure $U 0 -weight 1
 
 namespace eval ui {
     proc log {} { return .main.pw.right.log }
+    proc me {} { return $::rs::state(author) }
+
+    proc update_title {args} {
+        set t "tkchat — [me]"
+        if {!$::rs::state(connected)} { append t " (offline)" }
+        wm title . $t
+    }
+
+    proc fetch_chans {} { rs::call channels ui::got_chans }
+    proc got_chans {chans} {
+        variable known $chans
+        refresh_chans
+    }
 
     proc refresh_chans {} {
         variable cur
+        variable known
         variable joined
         variable shown
         variable unread
-        if {[catch chat::channels chans]} { set chans {} }
-        set shown [lsort -unique [concat $chans $joined]]
+        set shown [lsort -unique [concat $known $joined]]
         set tv .main.pw.left.chans
         $tv delete [$tv children {}]
         set i 0
@@ -113,67 +128,100 @@ namespace eval ui {
         if {$i >= 0} { $tv selection set c$i; $tv see c$i }
     }
 
+    # text tag for an author's name, in a color picked by rust
+    proc author_tag {who} {
+        if {$who eq [me]} { return me }
+        set t [log]
+        if {"a:$who" ni [$t tag names]} {
+            $t tag configure a:$who -font TkHeadingFont -foreground [rs::cmd author_color $who]
+        }
+        return a:$who
+    }
+
     # insert one message at $where ("end" or "1.0")
     proc render {m where} {
         set t [log]
         set ts [clock format [expr {[dict get $m ts] / 1000}] -format %H:%M:%S]
         set who [dict get $m author]
-        set tag [expr {$who eq [chat::author] ? "me" : "author"}]
+        set tag [author_tag $who]
         $t configure -state normal
-        $t insert $where "$ts " ts "<$who> " $tag "[dict get $m msg]\n" {}
+        $t insert $where "$ts " ts "<$who> " [list $tag] "[dict get $m msg]\n" {}
+        $t configure -state disabled
+    }
+
+    proc clear_log {} {
+        set t [log]
+        $t configure -state normal
+        $t delete 1.0 end
         $t configure -state disabled
     }
 
     proc switch_to {chan} {
         variable cur
         variable joined
-        variable oldest
+        variable oldest ""
+        variable newest ""
         variable unread
         set cur $chan
         if {$chan ni $joined} { lappend joined $chan }
-        catch {chat::set_chans $joined}
+        set ::rs::ui(joined) $joined
         set unread($chan) 0
-        set t [log]
-        $t configure -state normal
-        $t delete 1.0 end
-        $t configure -state disabled
-        if {[catch {chat::messages $chan "" 50} msgs]} {
-            puts stderr "can't load $chan: $msgs"
-            set msgs {}
-        }
-        foreach m $msgs { render $m end }
-        set oldest [expr {[llength $msgs] ? [dict get [lindex $msgs 0] id] : ""}]
-        $t see end
+        clear_log
+        rs::call messages $chan "" 50 [list ui::show_history $chan]
         refresh_chans
         on_presence
         focus .main.pw.right.input
     }
 
-    proc on_presence {} {
+    proc show_history {chan msgs} {
         variable cur
-        set lb .main.pw.users.list
-        $lb delete 0 end
-        foreach a [chat::present $cur] {
-            $lb insert end $a
-            if {$a eq [chat::author]} { $lb itemconfigure end -foreground DarkGreen }
+        variable oldest
+        variable newest
+        if {$chan ne $cur} return
+        # replaces whatever on_msg added in the meantime
+        clear_log
+        foreach m $msgs { render $m end }
+        if {[llength $msgs]} {
+            set oldest [dict get [lindex $msgs 0] id]
+            set newest [dict get [lindex $msgs end] id]
         }
-    }
-
-    # the daemon restarted: its history is gone, redraw from scratch
-    proc on_reconnect {} {
-        variable cur
-        switch_to $cur
+        [log] see end
     }
 
     proc load_older {} {
         variable cur
         variable oldest
         if {$oldest eq ""} return
-        set msgs [chat::messages $cur $oldest 50]
-        if {![llength $msgs]} return
+        rs::call messages $cur $oldest 50 [list ui::show_older $cur]
+    }
+
+    proc show_older {chan msgs} {
+        variable cur
+        variable oldest
+        if {$chan ne $cur || ![llength $msgs]} return
         foreach m [lreverse $msgs] { render $m 1.0 }
         set oldest [dict get [lindex $msgs 0] id]
         [log] see 1.0
+    }
+
+    proc on_presence {args} {
+        variable cur
+        set lb .main.pw.users.list
+        $lb delete 0 end
+        set here {}
+        if {[info exists ::rs::state(here:$cur)]} { set here $::rs::state(here:$cur) }
+        foreach a $here {
+            $lb insert end $a
+            set color [expr {$a eq [me] ? "DarkGreen" : [rs::cmd author_color $a]}]
+            $lb itemconfigure end -foreground $color
+        }
+    }
+
+    # the daemon restarted: its history is gone, redraw from scratch
+    proc on_reconnect {args} {
+        variable cur
+        fetch_chans
+        switch_to $cur
     }
 
     proc on_select {} {
@@ -209,19 +257,26 @@ namespace eval ui {
         if {$text eq ""} return
         $e delete 0 end
         # no local echo: the daemon pushes it back to us via ui::on_msg
-        chat::post $cur $text
+        rs::call post $cur $text {}
     }
 
     proc on_msg {m} {
         variable cur
+        variable known
         variable oldest
+        variable newest
         variable unread
         set chan [dict get $m chan]
+        set id [dict get $m id]
+        if {$chan ni $known} { lappend known $chan }
         if {$chan eq $cur} {
+            # may already be part of the history we just loaded
+            if {$newest ne "" && $id <= $newest} return
             set t [log]
             set at_bottom [expr {[lindex [$t yview] 1] >= 0.999}]
             render $m end
-            if {$oldest eq ""} { set oldest [dict get $m id] }
+            set newest $id
+            if {$oldest eq ""} { set oldest $id }
             if {$at_bottom} { $t see end }
         } else {
             incr unread($chan)
@@ -230,4 +285,11 @@ namespace eval ui {
     }
 }
 
+rs::on msg ui::on_msg
+rs::on reconnect ui::on_reconnect
+rs::watch here:* ui::on_presence
+rs::watch connected ui::update_title
+
+ui::update_title
+ui::fetch_chans
 ui::switch_to $ui::cur
