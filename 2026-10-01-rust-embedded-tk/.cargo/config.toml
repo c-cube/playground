@@ -1,0 +1,3 @@
+[env]
+# bindgen (via the `clib` crate) can't find clang's builtin headers otherwise
+BINDGEN_EXTRA_CLANG_ARGS = "-I/usr/lib/clang/20/include"

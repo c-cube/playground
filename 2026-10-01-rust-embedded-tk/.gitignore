@@ -1,0 +1,4 @@
+target
+chat.sock
+*.log
+daemon.pid
