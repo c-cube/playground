@@ -1,22 +1,22 @@
-(** Host a Tcl/Tk UI in the same process, talking to it only through
-    messages, a table of primitives, and two dictionaries:
+(** Host a Tcl/Tk UI in the same process.
 
-    - host → Tcl: events ({!emit}) and replies to calls.
-    - Tcl → host: primitives ({!add_prim} and friends), called either async
-      ([ocaml::call], on a worker thread, result via callback) or sync
-      ([ocaml::cmd], right away on the Tcl thread, so only for quick ones), and
-      fire-and-forget messages ({!on}).
-    - our dict ({!set}), mirrored read-only in Tcl as [ocaml::state].
-    - Tcl's dict [ocaml::ui], mirrored read-only here ({!tcl_get}).
+    - Tcl → OCaml: primitives. Each one is a Tcl command [ocaml::NAME args...],
+      either sync (runs on the Tcl thread, returns the result) or async (takes a
+      callback as last argument, runs on a worker thread).
+    - OCaml → Tcl: one queue, drained by Tcl every 10ms. It carries events
+      ({!emit}, run by [ocaml::on]), replies to async calls, and changes to two
+      dicts that only OCaml writes and Tcl reads: [ocaml::state] ({!set}) and
+      [ocaml::pstate] ({!pset}), which is also saved to disk.
 
     UI files are re-sourced when they change on disk, with the copy embedded
-    at build time as a fallback. The Tcl side of the API is documented in
-    [prelude.tcl].
+    at build time as a fallback. [ocaml::state] survives that; [ocaml::pstate]
+    also survives a restart. The Tcl side of the API is in [prelude.tcl].
 
-    Both ends share a socketpair that Tcl reads with [fileevent], so nothing
-    polls. Apart from [ocaml::cmd], OCaml never touches the interpreter after
-    startup. Values are strings; build Tcl lists and dicts with {!Tcl}. *)
+    Rules for primitives: sync ones must be quick, and never wait for anything
+    that needs the Tcl thread. Anything doing IO should be async. Raise
+    [Failure msg] (or anything else) to return an error. *)
 
+(** Writing Tcl lists and dicts, for results and payloads. *)
 module Tcl = Tcl
 
 (** A Tcl file embedded in the binary, reloaded from [path] whenever that file
@@ -26,20 +26,34 @@ type tcl_file = { data : string; path : string }
 
 type t
 
-val create : unit -> t
+(** [pstate] is the JSON file [ocaml::pstate] is loaded from and saved to.
+    Without it, [ocaml::pstate] lives in memory only. *)
+val create : ?pstate:string -> unit -> t
 
 (** {2 Primitives}
 
-    All three share one table: a name is callable as [ocaml::cmd name args...]
-    and [ocaml::call name args... callback]. Raise [Failure msg] (or anything
-    else) to return an error. A wrong number of arguments is an error too. *)
+    [add_prim t name f] makes [ocaml::NAME args...], which runs [f] on the Tcl
+    thread and returns its result.
 
-val add_prim : t -> string -> (string list -> string) -> unit
-val add_prim1 : t -> string -> (string -> string) -> unit
-val add_prim2 : t -> string -> (string -> string -> string) -> unit
+    With [~async:true], it's [ocaml::NAME args... callback] instead: it returns
+    at once, [f] runs on the worker thread (one call at a time, in order), then
+    [{*}$callback $result] runs on success ("" = ignore it). Errors are printed
+    to stderr.
 
-(** Receive [ocaml::send name args...]. Runs on the worker thread. *)
-val on : t -> string -> (string list -> unit) -> unit
+    Names must not start with [_] or contain [:], and [on] and [watch] are
+    taken. Primitives can be added at any time, from any thread. *)
+
+val add_prim : ?async:bool -> t -> string -> (string list -> string) -> unit
+
+(** Same, with exactly one or two arguments. *)
+val add_prim1 : ?async:bool -> t -> string -> (string -> string) -> unit
+
+val add_prim2 : ?async:bool -> t -> string -> (string -> string -> string) -> unit
+
+(** {2 Events} *)
+
+(** Run the [ocaml::on name] command with this payload. *)
+val emit : t -> string -> string -> unit
 
 (** {2 Dictionaries} *)
 
@@ -47,23 +61,17 @@ val on : t -> string -> (string list -> unit) -> unit
 val set : t -> string -> string -> unit
 
 val unset : t -> string -> unit
-
-(** Current value of [ocaml::state(k)], as Tcl sees it. *)
 val get : t -> string -> string option
 
-(** Current value of [ocaml::ui(k)]. *)
-val tcl_get : t -> string -> string option
+(** Same for [ocaml::pstate], saved to the [pstate] file on each change. *)
+val pset : t -> string -> string -> unit
 
-(** Called (on the worker thread) when Tcl sets ([Some v]) or unsets ([None])
-    a key of [ocaml::ui]. *)
-val on_tcl_change : t -> (string -> string option -> unit) -> unit
+val punset : t -> string -> unit
+val pget : t -> string -> string option
 
-(** {2 Events} *)
-
-(** Run the [ocaml::on name] command with this payload. *)
-val emit : t -> string -> string -> unit
+(** The message for an exception, readable for [Failure] and [Unix_error]. *)
+val error_message : exn -> string
 
 (** Start Tk, source [files] in order, and run the event loop until the main
-    window is closed. Call it once, from the main thread. Primitives and
-    listeners can still be added afterwards, from any thread. *)
+    window is closed. Call it once, from the main thread. *)
 val run : t -> tcl_file list -> unit

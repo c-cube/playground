@@ -1,30 +1,41 @@
-# tkchat UI, hosted by tkhost (see tkhost/src/prelude.tcl for the ocaml:: API).
+# tkchat UI, hosted by tkhost (see tkhost/prelude.tcl for the ocaml:: API).
 # Re-sourced whenever this file changes, so it must be idempotent:
 # everything lives under .main, state lives in the ui namespace.
 #
-# ocaml::call  channels | messages chan ?before? ?limit? | post chan msg
-# ocaml::cmd   author_color name
-# ocaml::on    msg {dict} | reconnect
-# ocaml::state author | connected | here:<chan>
-# ocaml::ui    joined (channels we announce presence in)
+# The ocaml:: primitives, events and state it uses are listed in src/gui.ml;
+# ocaml::pstate holds cur and joined.
+#
+# Presence: every 5s we announce the channels we joined; authors who haven't
+# announced themselves for 40s are gone.
 
 catch {destroy .main}
 
 namespace eval ui {
-    if {![info exists cur]} { variable cur general }
-    if {![info exists joined]} { variable joined [list general] }
+    if {![info exists cur]} {
+        variable cur [expr {[info exists ::ocaml::pstate(cur)] ? $::ocaml::pstate(cur) : "general"}]
+    }
+    if {![info exists joined]} {
+        variable joined [expr {[info exists ::ocaml::pstate(joined)] ? $::ocaml::pstate(joined) : [list general]}]
+    }
     if {![info exists known]} { variable known {} }  ;# channels the daemon has
-    variable oldest ""   ;# smallest message id shown in the log
-    variable newest ""   ;# largest one
+    # oldest, newest: smallest and largest message id shown in the log
     variable shown {}    ;# channel names, in tree order
-    variable unread
-    if {![array exists unread]} { array set unread {} }
+    variable unread; array set unread {}
+    variable seen; array set seen {}  ;# author -> {last_announce_time chans}
+    variable tick        ;# the pending `after` for ui::tick
+    if {[info exists tick]} { after cancel $tick }
 }
 
 wm geometry . 800x500
 
 ttk::frame .main
 pack .main -fill both -expand 1
+
+# connection status, top right
+ttk::frame .main.top -padding {4 2 6 0}
+ttk::label .main.top.status -compound left
+pack .main.top.status -side right
+pack .main.top -fill x
 
 ttk::panedwindow .main.pw -orient horizontal
 pack .main.pw -fill both -expand 1
@@ -44,7 +55,8 @@ bind $L.chans <<TreeviewSelect>> ui::on_select
 $L.chans tag configure unread -font TkHeadingFont
 
 # red dot for channels with unread messages, transparent one otherwise
-foreach {img color} {ui::dot red ui::nodot ""} {
+# (also the connection status: green when connected, red when not)
+foreach {img color} {ui::dot red ui::nodot "" ui::green green3} {
     catch {image delete $img}
     image create photo $img -width 10 -height 10
     if {$color eq ""} continue
@@ -75,7 +87,6 @@ bind . <Alt-Up>   {ui::move_chan -1}
 bind . <Alt-Down> {ui::move_chan 1}
 
 $R.log tag configure ts -foreground gray50
-$R.log tag configure me -font TkHeadingFont -foreground DarkGreen
 
 # --- who's here ---
 set U [ttk::frame .main.pw.users -padding 4]
@@ -94,13 +105,21 @@ namespace eval ui {
     proc log {} { return .main.pw.right.log }
     proc me {} { return $::ocaml::state(author) }
 
-    proc update_title {args} {
-        set t "tkchat-ml — [me]"
-        if {!$::ocaml::state(connected)} { append t " (offline)" }
-        wm title . $t
+    proc update_status {args} {
+        wm title . "tkchat-ml — [me]"
+        if {$::ocaml::state(connected)} {
+            set img ui::green
+            set text " connected"
+        } else {
+            set img ui::dot
+            set text " disconnected"
+        }
+        set q $::ocaml::state(outbox)
+        if {$q > 0} { append text " ($q queued)" }
+        .main.top.status configure -image $img -text $text
     }
 
-    proc fetch_chans {} { ocaml::call channels ui::got_chans }
+    proc fetch_chans {} { ocaml::channels ui::got_chans }
     proc got_chans {chans} {
         variable known $chans
         refresh_chans
@@ -117,23 +136,29 @@ namespace eval ui {
         $tv delete [$tv children {}]
         set i 0
         foreach c $shown {
-            if {[info exists unread($c)] && $unread($c) > 0} {
-                $tv insert {} end -id c$i -text " # $c  ($unread($c))" -image ui::dot -tags unread
+            set n [expr {[info exists unread($c)] ? $unread($c) : 0}]
+            if {$n > 0} {
+                set opts [list -text " # $c  ($n)" -image ui::dot -tags unread]
             } else {
-                $tv insert {} end -id c$i -text " # $c" -image ui::nodot
+                set opts [list -text " # $c" -image ui::nodot]
             }
+            $tv insert {} end -id c$i {*}$opts
             incr i
         }
         set i [lsearch -exact $shown $cur]
         if {$i >= 0} { $tv selection set c$i; $tv see c$i }
     }
 
-    # text tag for an author's name, in a color picked by rust
+    # an author's color: ours, or one picked by OCaml
+    proc color {who} {
+        expr {$who eq [me] ? "DarkGreen" : [ocaml::author_color $who]}
+    }
+
+    # text tag for an author's name
     proc author_tag {who} {
-        if {$who eq [me]} { return me }
         set t [log]
         if {"a:$who" ni [$t tag names]} {
-            $t tag configure a:$who -font TkHeadingFont -foreground [ocaml::cmd author_color $who]
+            $t tag configure a:$who -font TkHeadingFont -foreground [color $who]
         }
         return a:$who
     }
@@ -164,12 +189,13 @@ namespace eval ui {
         variable unread
         set cur $chan
         if {$chan ni $joined} { lappend joined $chan }
-        set ::ocaml::ui(joined) $joined
+        ocaml::remember cur $cur
+        ocaml::remember joined $joined
         set unread($chan) 0
         clear_log
-        ocaml::call messages $chan "" 50 [list ui::show_history $chan]
+        ocaml::messages $chan "" [list ui::show_history $chan]
         refresh_chans
-        on_presence
+        announce
         focus .main.pw.right.input
     }
 
@@ -178,7 +204,7 @@ namespace eval ui {
         variable oldest
         variable newest
         if {$chan ne $cur} return
-        # replaces whatever on_msg added in the meantime
+        # replaces whatever on_event added in the meantime
         clear_log
         foreach m $msgs { render $m end }
         if {[llength $msgs]} {
@@ -192,7 +218,7 @@ namespace eval ui {
         variable cur
         variable oldest
         if {$oldest eq ""} return
-        ocaml::call messages $cur $oldest 50 [list ui::show_older $cur]
+        ocaml::messages $cur $oldest [list ui::show_older $cur]
     }
 
     proc show_older {chan msgs} {
@@ -204,24 +230,53 @@ namespace eval ui {
         [log] see 1.0
     }
 
-    proc on_presence {args} {
+    proc announce {} {
+        variable joined
+        ocaml::presence {*}$joined {}
+    }
+
+    proc on_presence {p} {
+        variable seen
+        set seen([dict get $p author]) [list [clock seconds] [dict get $p chans]]
+        show_here
+    }
+
+    # every 5s: announce ourselves, drop whoever went silent
+    proc tick {} {
+        variable tick [after 5000 ui::tick]
+        announce
+        show_here
+    }
+
+    # fill the "Here" list for the current channel
+    proc show_here {} {
         variable cur
+        variable seen
+        set here {}
+        foreach {a v} [array get seen] {
+            lassign $v at chans
+            if {[clock seconds] - $at > 40} {
+                unset seen($a)
+            } elseif {$cur in $chans} {
+                lappend here $a
+            }
+        }
         set lb .main.pw.users.list
         $lb delete 0 end
-        set here {}
-        if {[info exists ::ocaml::state(here:$cur)]} { set here $::ocaml::state(here:$cur) }
-        foreach a $here {
+        foreach a [lsort $here] {
             $lb insert end $a
-            set color [expr {$a eq [me] ? "DarkGreen" : [ocaml::cmd author_color $a]}]
-            $lb itemconfigure end -foreground $color
+            $lb itemconfigure end -foreground [color $a]
         }
     }
 
-    # the daemon restarted: its history is gone, redraw from scratch
-    proc on_reconnect {args} {
+    # the daemon (re)started: its history may be gone, redraw from scratch
+    proc on_connected {args} {
         variable cur
-        fetch_chans
-        switch_to $cur
+        update_status
+        if {$::ocaml::state(connected)} {
+            fetch_chans
+            switch_to $cur
+        }
     }
 
     proc on_select {} {
@@ -256,11 +311,12 @@ namespace eval ui {
         set text [string trim [$e get]]
         if {$text eq ""} return
         $e delete 0 end
-        # no local echo: the daemon pushes it back to us via ui::on_msg
-        ocaml::call post $cur $text {}
+        # no local echo: the daemon pushes it back to us via ui::on_event
+        ocaml::post $cur $text {}
     }
 
-    proc on_msg {m} {
+    proc on_event {e} {
+        set m [dict get $e msg]
         variable cur
         variable known
         variable oldest
@@ -285,11 +341,12 @@ namespace eval ui {
     }
 }
 
-ocaml::on msg ui::on_msg
-ocaml::on reconnect ui::on_reconnect
-ocaml::watch here:* ui::on_presence
-ocaml::watch connected ui::update_title
+ocaml::on event ui::on_event
+ocaml::on presence ui::on_presence
+ocaml::watch connected ui::on_connected
+ocaml::watch outbox ui::update_status
 
-ui::update_title
+ui::update_status
 ui::fetch_chans
 ui::switch_to $ui::cur
+ui::tick

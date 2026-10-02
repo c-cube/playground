@@ -1,9 +1,8 @@
-/* The only C in tkhost: start Tcl/Tk, hand it our socketpair end, register
-   `ocaml::cmd`, run the main loop.
+/* The only C in tkhost: start Tcl/Tk, register `ocaml::_cmd`, run the main
+   loop.
 
-   Everything Tcl runs with the OCaml runtime released, so the reader and
-   worker threads keep going; `ocaml::cmd` re-acquires it to call back into
-   OCaml. */
+   Everything Tcl runs with the OCaml runtime released, so other OCaml threads
+   keep going; `ocaml::_cmd` re-acquires it to call back into OCaml. */
 
 #define CAML_NAME_SPACE
 #include <caml/alloc.h>
@@ -12,7 +11,6 @@
 #include <caml/memory.h>
 #include <caml/mlvalues.h>
 #include <caml/threads.h>
-#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <tcl.h>
@@ -21,15 +19,16 @@
 extern int Tk_Init(Tcl_Interp *interp);
 extern void Tk_MainLoop(void);
 
-/* `ocaml::cmd name ?arg ...?` calls the OCaml closure registered as
+/* `ocaml::_cmd ?arg ...?` calls the OCaml closure registered as
    "tkhost_cmd" : string array -> bool * string (ok, result or error). */
 static int cmd_proc(ClientData cd, Tcl_Interp *interp, int objc, Tcl_Obj *const objv[]) {
+  static const value *f = NULL;
   int code;
   caml_acquire_runtime_system();
   {
     CAMLparam0();
     CAMLlocal3(args, res, s);
-    const value *f = caml_named_value("tkhost_cmd");
+    if (f == NULL) f = caml_named_value("tkhost_cmd");
     args = caml_alloc(objc - 1, 0);
     for (int i = 1; i < objc; i++) {
       int len;
@@ -39,7 +38,7 @@ static int cmd_proc(ClientData cd, Tcl_Interp *interp, int objc, Tcl_Obj *const 
     res = caml_callback_exn(*f, args);
     if (Is_exception_result(res)) {
       code = TCL_ERROR;
-      Tcl_SetObjResult(interp, Tcl_NewStringObj("ocaml::cmd: uncaught OCaml exception", -1));
+      Tcl_SetObjResult(interp, Tcl_NewStringObj("ocaml::_cmd: uncaught OCaml exception", -1));
     } else {
       code = Bool_val(Field(res, 0)) ? TCL_OK : TCL_ERROR;
       s = Field(res, 1);
@@ -67,13 +66,12 @@ static Tcl_Obj *obj_of_string(value s) {
   return o;
 }
 
-/* tkhost_run : string (argv0) -> Unix.file_descr -> string (files) -> string (prelude) -> unit
+/* tkhost_run : string (argv0) -> string (files) -> string (prelude) -> unit
    Raises Failure if Tcl/Tk can't start or the prelude fails. */
-value tkhost_run(value argv0, value fd, value files, value prelude) {
-  CAMLparam4(argv0, fd, files, prelude);
+value tkhost_run(value argv0, value files, value prelude) {
+  CAMLparam3(argv0, files, prelude);
   /* copy what we need out of the OCaml heap before releasing the runtime */
   char *exe = strdup(String_val(argv0));
-  int ifd = Int_val(fd);
   Tcl_Obj *files_obj = obj_of_string(files);
   Tcl_Obj *prelude_obj = obj_of_string(prelude);
   char *err = NULL;
@@ -86,13 +84,9 @@ value tkhost_run(value argv0, value fd, value files, value prelude) {
   } else if (Tk_Init(interp) != TCL_OK) {
     err = tcl_error(interp, "Tk_Init");
   } else {
-    /* Tcl owns the fd from now on */
-    Tcl_Channel chan = Tcl_MakeFileChannel((ClientData)(intptr_t)ifd, TCL_READABLE | TCL_WRITABLE);
-    Tcl_RegisterChannel(interp, chan);
-    Tcl_Eval(interp, "namespace eval ocaml {}");
-    Tcl_SetVar2Ex(interp, "::ocaml::chan", NULL, Tcl_NewStringObj(Tcl_GetChannelName(chan), -1), TCL_GLOBAL_ONLY);
+    Tcl_CreateNamespace(interp, "::ocaml", NULL, NULL);
     Tcl_SetVar2Ex(interp, "::ocaml::files", NULL, files_obj, TCL_GLOBAL_ONLY);
-    Tcl_CreateObjCommand(interp, "ocaml::cmd", cmd_proc, NULL, NULL);
+    Tcl_CreateObjCommand(interp, "ocaml::_cmd", cmd_proc, NULL, NULL);
     if (Tcl_EvalObjEx(interp, prelude_obj, TCL_EVAL_GLOBAL) != TCL_OK) {
       err = tcl_error(interp, "tkhost prelude");
     } else {

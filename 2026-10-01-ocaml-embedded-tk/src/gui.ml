@@ -1,24 +1,19 @@
-(* Tk client: OCaml talks to the daemon, ui.tcl draws, Tkhost connects them.
+(* Tk client: OCaml talks to the daemon, ui.tcl does everything else.
 
-   - async calls (ocaml::call): channels, messages chan ?before? ?limit?, post chan msg
-   - sync calls (ocaml::cmd): author_color name
-   - events (ocaml::on): msg {dict} for each new message, reconnect after the
-     daemon came back
-   - our state (ocaml::state): author, connected (0/1), here:<chan> (authors
-     seen there in the last 40s), outbox (number of posts waiting for the
-     daemon to come back)
-   - UI state we read (ocaml::ui): joined, the channels we announce presence in
-     (every 5s, and whenever it changes)
+   - async primitives: ocaml::channels, ocaml::messages chan before ("" =
+     latest), ocaml::post chan msg, ocaml::presence chan..., each followed by
+     a callback
+   - sync primitives: ocaml::author_color name, ocaml::remember key value
+     (sets ocaml::pstate(key), saved to the --state file)
+   - events (ocaml::on): the daemon's pushes, as dicts: event {msg {...}} for
+     each new message, presence {author .. chans ..} for each announcement
+   - our state (ocaml::state): author, connected (0/1), outbox (number of
+     posts waiting for the daemon to come back)
 
-   Both daemon connections reconnect on their own. While the daemon is
-   unreachable, posts are queued (up to [max_outbox]) and sent in order once
-   it's back. *)
+   While the daemon is unreachable, posts are queued (up to [max_outbox]) and
+   sent in order before the next request that gets through. *)
 
-let presence_every = 5.0
-let presence_timeout = 40.0
-
-(* after a failed connect, wait this long before trying again *)
-let retry_every = 10.0
+let retry_every = 10.0 (* reconnecting the subscription *)
 let max_outbox = 50
 
 (* the daemon can't be reached right now (as opposed to: it said no) *)
@@ -30,181 +25,98 @@ type chat = {
   ui : Tkhost.t;
   sock : string;
   author : string;
-  ctrl_lock : Mutex.t;
-  mutable ctrl : Proto.conn option;  (** [None] after an IO error *)
-  mutable retry_at : float option;  (** no connect attempt before this *)
-  seen_lock : Mutex.t;
-  seen : (string, string list * float) Hashtbl.t;
-      (** last presence broadcast received, per author: channels and time *)
-  mutable here_chans : string list;  (** the here:<chan> keys set, under [seen_lock] *)
-  outbox_lock : Mutex.t;  (** taken before [ctrl_lock] *)
+  lock : Mutex.t;  (** for the two below *)
+  mutable conn : Proto.conn option;  (** [None] after an IO error *)
   outbox : (string * string) Queue.t;  (** (chan, msg) posts not sent yet *)
 }
 
-let error_message = function
-  | Failure m | Offline m -> m
-  | Unix.Unix_error (e, fn, _) -> fn ^ ": " ^ Unix.error_message e
-  | e -> Printexc.to_string e
+(* The daemon's JSON as Tcl: objects become dicts, arrays lists, null "". *)
+let rec to_tcl : Yojson.Safe.t -> string = function
+  | `Null -> ""
+  | `Bool b -> if b then "1" else "0"
+  | `Int i -> string_of_int i
+  | `Intlit s -> s
+  | `Float f -> Printf.sprintf "%.17g" f
+  | `String s -> s
+  | `List l -> Tkhost.Tcl.list (List.map to_tcl l)
+  | `Assoc kvs -> Tkhost.Tcl.dict (List.map (fun (k, v) -> (k, to_tcl v)) kvs)
 
-(* Request/response on the control connection; on an IO error, reconnect and
-   retry once. Raises [Offline] if the daemon can't be reached. *)
-let call c req =
-  Mutex.protect c.ctrl_lock (fun () ->
-      let rec go attempt =
-        let conn =
-          match c.ctrl with
-          | Some conn -> conn
-          | None -> (
-            let now = Unix.gettimeofday () in
-            (match c.retry_at with
-             | Some t when now < t ->
-               raise (Offline (Printf.sprintf "disconnected, retrying in %.0fs" (Float.ceil (t -. now))))
-             | _ -> ());
-            match Proto.connect c.sock with
-            | conn ->
-              c.ctrl <- Some conn;
-              c.retry_at <- None;
-              conn
-            | exception e ->
-              c.retry_at <- Some (now +. retry_every);
-              raise (Offline (error_message e)))
-        in
-        match Proto.call conn req with
-        | r -> r
-        | exception e when Proto.is_io_error e ->
-          Proto.close conn;
-          c.ctrl <- None;
-          if attempt = 1 then raise (Offline (error_message e)) else go 1
-      in
-      go 0)
+let offline e = Offline (Tkhost.error_message e)
 
-let to_tcl_list j = Tkhost.Tcl.of_json (Proto.field "msgs" j)
-
-let channels c = function
-  | [] -> Tkhost.Tcl.of_json (Proto.field "chans" (call c Proto.list_chans))
-  | _ -> failwith "wrong # args: should be \"channels\""
-
-let messages c args =
-  let chan, before, limit =
-    match args with
-    | [ chan ] -> (chan, "", "50")
-    | [ chan; before ] -> (chan, before, "50")
-    | [ chan; before; limit ] -> (chan, before, limit)
-    | _ -> failwith "wrong # args: should be \"messages chan ?before? ?limit?\""
+(* One request on the control connection, under [lock]. A connection that
+   went stale (the daemon restarted) gets one retry on a fresh one. *)
+let request c req =
+  let once () =
+    let conn =
+      match c.conn with
+      | Some conn -> conn
+      | None ->
+        let conn = try Proto.connect c.sock with e -> raise (offline e) in
+        c.conn <- Some conn;
+        conn
+    in
+    try Proto.call conn req
+    with e when Proto.is_io_error e ->
+      Proto.close conn;
+      c.conn <- None;
+      raise (offline e)
   in
-  let num what s = match int_of_string_opt s with Some i -> i | None -> failwith (Printf.sprintf "bad %s %S" what s) in
-  let before = if before = "" then None else Some (num "id" before) in
-  to_tcl_list (call c (Proto.list_msgs ~chan ~before ~limit:(num "limit" limit)))
+  let stale = Option.is_some c.conn in
+  try once () with Offline _ when stale -> once ()
 
-let send_post c (chan, msg) = Proto.field "msg" (call c (Proto.post ~chan ~author:c.author ~msg))
+let send_post c (chan, msg) =
+  ignore (request c (Proto.req "post" [ ("chan", `String chan); ("author", `String c.author); ("msg", `String msg) ]))
 
-(* Send queued posts in order, stopping at the first one that can't be sent
-   yet. Call with [outbox_lock] held. *)
-let flush_outbox_locked c =
+let set_outbox c = Tkhost.set c.ui "outbox" (string_of_int (Queue.length c.outbox))
+
+(* Send queued posts in order, stopping at the first one that can't go yet.
+   Under [lock]. *)
+let flush c =
   let rec go () =
     match Queue.peek_opt c.outbox with
     | None -> ()
     | Some p -> (
       match send_post c p with
-      | _ ->
-        ignore (Queue.pop c.outbox);
-        go ()
+      | () -> ignore (Queue.pop c.outbox); go ()
       | exception Offline _ -> ()
       | exception e ->
         (* the daemon refused it: retrying won't help *)
-        Printf.eprintf "dropping queued post to %s: %s\n%!" (fst p) (error_message e);
+        Printf.eprintf "dropping queued post to %s: %s\n%!" (fst p) (Tkhost.error_message e);
         ignore (Queue.pop c.outbox);
         go ())
   in
   go ();
-  Tkhost.set c.ui "outbox" (string_of_int (Queue.length c.outbox))
+  set_outbox c
 
-let flush_outbox c = Mutex.protect c.outbox_lock (fun () -> flush_outbox_locked c)
+(* Every request sends the queued posts first, so they stay in order. *)
+let call c req = Mutex.protect c.lock (fun () -> flush c; request c req)
 
-(* Returns the posted message, or "" if it was queued. Queued posts go first,
-   so messages stay in order. *)
+(* Every post goes through the outbox: sent now if the daemon is there, kept
+   for later otherwise. *)
 let post c chan msg =
-  Mutex.protect c.outbox_lock (fun () ->
-      flush_outbox_locked c;
-      let queue () =
-        if Queue.length c.outbox >= max_outbox then
-          failwith (Printf.sprintf "offline, and %d messages are already waiting" max_outbox);
-        Queue.push (chan, msg) c.outbox;
-        Tkhost.set c.ui "outbox" (string_of_int (Queue.length c.outbox));
-        ""
-      in
-      if not (Queue.is_empty c.outbox) then queue ()
-      else match send_post c (chan, msg) with m -> Tkhost.Tcl.of_json m | exception Offline _ -> queue ())
+  Mutex.protect c.lock (fun () ->
+      if Queue.length c.outbox >= max_outbox then flush c;
+      if Queue.length c.outbox >= max_outbox then
+        failwith (Printf.sprintf "offline, and %d messages are already waiting" max_outbox);
+      Queue.push (chan, msg) c.outbox;
+      flush c;
+      "")
 
-let announce c =
-  let chans = match Tkhost.tcl_get c.ui "joined" with None -> [] | Some l -> Tkhost.Tcl.parse_list l in
-  ignore (call c (Proto.presence ~author:c.author ~chans))
-
-(* Expire silent authors and publish here:<chan> for every channel. *)
-let update_presence c =
-  Mutex.protect c.seen_lock (fun () ->
-      let now = Unix.gettimeofday () in
-      Hashtbl.filter_map_inplace
-        (fun _ ((_, at) as s) -> if now -. at <= presence_timeout then Some s else None)
-        c.seen;
-      let by_chan = Hashtbl.create 8 in
-      Hashtbl.iter
-        (fun author (chans, _) ->
-          List.iter (fun ch -> Hashtbl.replace by_chan ch (author :: Option.value ~default:[] (Hashtbl.find_opt by_chan ch))) chans)
-        c.seen;
-      let chans = List.sort_uniq compare (List.of_seq (Hashtbl.to_seq_keys by_chan)) in
-      List.iter (fun ch -> if not (List.mem ch chans) then Tkhost.unset c.ui ("here:" ^ ch)) c.here_chans;
-      List.iter
-        (fun ch -> Tkhost.set c.ui ("here:" ^ ch) (Tkhost.Tcl.list (List.sort_uniq compare (Hashtbl.find by_chan ch))))
-        chans;
-      c.here_chans <- chans)
-
-let on_push c = function
-  | Proto.Msg m -> Tkhost.emit c.ui "msg" (Tkhost.Tcl.of_json m)
-  | Proto.Presence (author, chans) ->
-    Mutex.protect c.seen_lock (fun () -> Hashtbl.replace c.seen author (chans, Unix.gettimeofday ()));
-    update_presence c
-
-(* Keep a subscription open, reconnecting forever. *)
+(* Forward pushes to Tcl, reconnecting forever. *)
 let subscriber c =
-  let first = ref true and warned = ref false in
   while true do
-    match
-      let conn = Proto.connect c.sock in
-      try
-        Proto.subscribe conn;
-        conn
-      with e ->
-        Proto.close conn;
-        raise e
-    with
-    | conn ->
-      Tkhost.set c.ui "connected" "1";
-      warned := false;
-      (* the UI may have been drawn while disconnected: refresh it *)
-      if not !first then begin
-        prerr_endline "resubscribed";
-        Mutex.protect c.ctrl_lock (fun () -> c.retry_at <- None);
-        flush_outbox c;
-        (try announce c with _ -> ());
-        Tkhost.emit c.ui "reconnect" ""
-      end;
-      (try
-         Proto.iter_pushes conn (on_push c);
-         prerr_endline "subscription closed, reconnecting…"
-       with e -> Printf.eprintf "subscription: %s\n%!" (error_message e));
-      Proto.close conn;
-      Tkhost.set c.ui "connected" "0";
-      (* retry right away, then every retry_every *)
-      first := false
-    | exception e ->
-      Tkhost.set c.ui "connected" "0";
-      if not !warned then begin
-        Printf.eprintf "subscribe: %s %s (retrying every %.0fs)\n%!" c.sock (error_message e) retry_every;
-        warned := true
-      end;
-      first := false;
-      Thread.delay retry_every
+    (match Proto.connect c.sock with
+     | exception _ -> () (* shows up as connected=0 *)
+     | conn ->
+       (try
+          Proto.subscribe conn;
+          Tkhost.set c.ui "connected" "1";
+          Mutex.protect c.lock (fun () -> flush c);
+          Proto.iter_pushes conn (fun typ j -> Tkhost.emit c.ui typ (to_tcl j))
+        with e -> Printf.eprintf "subscription: %s\n%!" (Tkhost.error_message e));
+       Proto.close conn);
+    Tkhost.set c.ui "connected" "0";
+    Thread.delay retry_every
   done
 
 (* A color per author, the same in every client, and the same as the Rust
@@ -223,42 +135,26 @@ let random_name () =
   let pick a = a.(Random.int (Array.length a)) in
   Printf.sprintf "%s-%s-%d" (pick adj) (pick animal) (Random.int 100)
 
-let run ~sock ~author ui_file =
+let run ~sock ~author ~pstate ui_file =
   Random.self_init ();
-  let ui = Tkhost.create () in
-  let c =
-    {
-      ui;
-      sock;
-      author = Option.value author ~default:(random_name ());
-      ctrl_lock = Mutex.create ();
-      ctrl = None;
-      retry_at = None;
-      seen_lock = Mutex.create ();
-      seen = Hashtbl.create 8;
-      here_chans = [];
-      outbox_lock = Mutex.create ();
-      outbox = Queue.create ();
-    }
-  in
-  Tkhost.set ui "author" c.author;
-  Tkhost.set ui "connected" "0";
-  Tkhost.set ui "outbox" "0";
-  Tkhost.add_prim ui "channels" (channels c);
-  Tkhost.add_prim ui "messages" (messages c);
-  Tkhost.add_prim2 ui "post" (post c);
+  (* a write to a dead daemon connection is an error, not a reason to die *)
+  Sys.set_signal Sys.sigpipe Sys.Signal_ignore;
+  let ui = Tkhost.create ?pstate () in
+  let author = Option.value author ~default:(random_name ()) in
+  let c = { ui; sock; author; lock = Mutex.create (); conn = None; outbox = Queue.create () } in
+  List.iter (fun (k, v) -> Tkhost.set ui k v) [ ("author", author); ("connected", "0"); ("outbox", "0") ];
+  Tkhost.add_prim ~async:true ui "channels" (fun _ -> to_tcl (Proto.field "chans" (call c (Proto.req "list_chans" []))));
+  Tkhost.add_prim2 ~async:true ui "messages" (fun chan before ->
+      let before = if before = "" then `Null else `Int (int_of_string before) in
+      let r = call c (Proto.req "list_msgs" [ ("chan", `String chan); ("before", before); ("limit", `Int 50) ]) in
+      to_tcl (Proto.field "msgs" r));
+  Tkhost.add_prim2 ~async:true ui "post" (post c);
+  (* every 5s from Tcl: quietly skipped while offline *)
+  Tkhost.add_prim ~async:true ui "presence" (fun chans ->
+      (try ignore (call c (Proto.req "presence" [ ("author", `String author); ("chans", `List (List.map (fun s -> `String s) chans)) ]))
+       with Offline _ -> ());
+      "");
   Tkhost.add_prim1 ui "author_color" author_color;
-  Tkhost.on_tcl_change ui (fun k _ -> if k = "joined" then try announce c with _ -> ());
+  Tkhost.add_prim2 ui "remember" (fun k v -> Tkhost.pset ui k v; "");
   ignore (Thread.create subscriber c);
-  ignore
-    (Thread.create
-       (fun () ->
-         while true do
-           (* errors already show up as connected=0 *)
-           (try announce c with _ -> ());
-           if Mutex.protect c.outbox_lock (fun () -> not (Queue.is_empty c.outbox)) then flush_outbox c;
-           update_presence c;
-           Thread.delay presence_every
-         done)
-       ());
   Tkhost.run ui [ ui_file ]
